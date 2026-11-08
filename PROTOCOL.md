@@ -158,6 +158,7 @@ XWayland. Rectangles are `{ "x", "y", "width", "height" }`.
 - API 1, plugin 1.0.0-alpha.2 (2026-11): `grabAccelerator`, `ungrabAccelerator`, the `accelerator` event (new
   operations, same API; clients look for them in `hello`'s `ops`).
 - API 1, plugin 1.0.0-alpha.3 (2026-11): `snapshots`, `snapshot`, the `snapshot` event.
+- API 1, plugin 2.0.0 (2026-11): the first full release, with SMBAct 2.0.0; the same API as 1.0.0-alpha.3.
 
 ## KWin transport
 
