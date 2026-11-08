@@ -24,6 +24,12 @@ On Wayland a newly installed or updated extension starts after you log out and b
 Only SMBAct may call it: the extension answers the current owner of the D-Bus name `com.giglabo.SMBAct` and refuses
 everyone else.
 
+## Releases
+
+A tag `vX.Y.Z` (equal to `version-name` in `metadata.json`) makes GitHub Actions publish
+`smbact@giglabo.com.shell-extension.zip` and `SHA256SUMS` as a release. SMBAct pins a tag and checks the sha256.
+Every push to `main` and every pull request runs the checks and packs the zip (`.github/workflows/`).
+
 ## License
 
 GPL-2.0-or-later (see [LICENSE](LICENSE)). SMBAct itself is a separate program that talks to these plugins over

@@ -83,7 +83,8 @@ XWayland. Rectangles are `{ "x", "y", "width", "height" }`.
 - `frame`: the visible window including server-side decorations; `clientRect`: the client area (larger than `frame`
   when the window draws its own shadow).
 - `stack`: position in the stacking order, 0 = bottom.
-- `icon`: a file path from the icon theme (only when asked for, see `listWindows`), or `null`.
+- `icon`: a file path from the icon theme, PNG when the theme has one (only when asked for, see `listWindows`), or
+  `null`. `iconPng` turns any icon file (SVG too) into PNG bytes.
 
 ## Operations (API 1)
 
@@ -91,19 +92,22 @@ XWayland. Rectangles are `{ "x", "y", "width", "height" }`.
 |---|---|---|
 | `hello` | | `{ api, plugin, version, shell, session, ops }` |
 | `listWindows` | `icons?` (bool), `iconSize?` (px, default 48) | `{ windows: Window[] }` |
-| `getWindow` | `id` | `{ window }` |
-| `activeWindow` | | `{ window }` (`null` when nothing has focus) |
-| `moveResize` | `id`, `x`, `y`, `width`, `height` | `{ window }` |
+| `getWindow` | `id`, `icons?`, `iconSize?` | `{ window }` |
+| `activeWindow` | `icons?`, `iconSize?` | `{ window }` (`null` when nothing has focus) |
+| `moveResize` | `id`, `x`, `y`, `width`, `height`, `space?` (`frame` default, or `client`) | `{ window }` |
 | `activate` | `id`, `time?` | `{ window }` |
 | `raise` | `id` | `{ window }` |
 | `setState` | `id`, `state`, `on` | `{ window }` |
 | `close` | `id`, `force?` | `{ closed: true }` |
 | `showDesktop` | `show` | `{ windows }` (how many were minimized or restored) |
 | `displays` | | `{ monitors: [{ index, geometry, workArea, scale, primary }] }` |
+| `iconPng` | `path` (an `icon` path), `size?` (px, default 48) | `{ png, width, height }` (`png`: base64 PNG bytes) |
 | `pointer` | | `{ x, y }` |
 
 - `setState` states: `minimized`, `maximized`, `maximizedHorizontally`, `maximizedVertically`, `fullscreen`,
   `above`.
+- `moveResize` takes the frame rect, or with `space: "client"` the client rect (the compositor converts it with the
+  window's own decorations and shadow).
 - `moveResize` leaves maximized and fullscreen first, then moves and resizes in two steps, so windows with resize
   increments (terminals) keep the requested position.
 - Wayland windows apply a new geometry or state asynchronously (the client acknowledges it about a frame later), so

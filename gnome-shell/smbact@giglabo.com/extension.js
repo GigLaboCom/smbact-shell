@@ -6,9 +6,11 @@
 // - activation uses the server's current time (time 0 may not get the focus);
 // - no synchronous work beyond one frame, every request in try/catch, everything undone in disable(): a hang
 //   freezes the desktop and a crash ends the session.
+import GdkPixbuf from 'gi://GdkPixbuf';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
+import Mtk from 'gi://Mtk';
 import Shell from 'gi://Shell';
 import St from 'gi://St';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
@@ -118,8 +120,8 @@ class Service {
     this._ops = {
       hello: () => this._hello(),
       listWindows: req => this._listWindows(req),
-      getWindow: req => ({window: this._describe(this._window(req))}),
-      activeWindow: () => ({window: this._describe(global.display.focus_window)}),
+      getWindow: req => ({window: this._describe(this._window(req), null, req.icons === true, this._iconSize(req))}),
+      activeWindow: req => ({window: this._describe(global.display.focus_window, null, req.icons === true, this._iconSize(req))}),
       moveResize: req => this._moveResize(req),
       activate: req => this._activate(req),
       raise: req => {
@@ -131,6 +133,7 @@ class Service {
       close: req => this._close(req),
       showDesktop: req => this._showDesktop(req),
       displays: () => this._displays(),
+      iconPng: req => this._iconPng(req),
       pointer: () => {
         const [x, y] = global.get_pointer();
         return {x, y};
@@ -286,7 +289,11 @@ class Service {
     if (this._iconCache.has(key))
       return this._iconCache.get(key);
     this._iconTheme ??= new St.IconTheme();
-    const lookup = gicon => tryOr(() => (gicon ? this._iconTheme.lookup_by_gicon(gicon, size, 0)?.get_filename() : null));
+    // A PNG first (SMBAct stores icons as PNG), any format after that.
+    const lookup = gicon => (gicon
+      ? tryOr(() => this._iconTheme.lookup_by_gicon(gicon, size, St.IconLookupFlags.NO_SVG)?.get_filename()) ??
+        tryOr(() => this._iconTheme.lookup_by_gicon(gicon, size, 0)?.get_filename())
+      : null);
     let file = lookup(tryOr(() => app?.get_icon()));
     // Apps without a .desktop file get a generic icon from the shell: try the icon theme by WM class instead.
     if ((!file || file.includes('application-x-executable')) && wmClass) {
@@ -333,18 +340,30 @@ class Service {
     };
   }
 
+  _iconSize(req) {
+    return typeof req.iconSize === 'number' && req.iconSize > 0 ? Math.min(Math.round(req.iconSize), 512) : 48;
+  }
+
   _listWindows(req) {
     const icons = req.icons === true;
-    const size = typeof req.iconSize === 'number' && req.iconSize > 0 ? Math.min(Math.round(req.iconSize), 512) : 48;
+    const size = this._iconSize(req);
     const stacked = global.display.sort_windows_by_stacking(allWindows());
     return {windows: stacked.map((w, i) => this._describe(w, i, icons, size))};
   }
 
   _moveResize(req) {
     const w = this._window(req);
-    const [x, y, width, height] = ['x', 'y', 'width', 'height'].map(k => this._number(req, k));
+    let [x, y, width, height] = ['x', 'y', 'width', 'height'].map(k => this._number(req, k));
     if (width <= 0 || height <= 0)
       throw badRequest('"width" and "height" must be positive');
+    if (req.space === 'client') {
+      // The rect is the client area: Mutter knows this window's decorations and shadow.
+      const r = new Mtk.Rectangle({x, y, width, height});
+      const f = w.client_rect_to_frame_rect(r);
+      [x, y, width, height] = [f.x, f.y, f.width, f.height];
+    } else if (req.space !== undefined && req.space !== 'frame') {
+      throw badRequest('"space" is "frame" or "client"');
+    }
     if (tryOr(() => w.is_fullscreen(), false))
       w.unmake_fullscreen();
     if (maximizeFlags(w))
@@ -400,6 +419,16 @@ class Service {
     else
       w.delete(global.display.get_current_time_roundtrip());
     return {closed: true};
+  }
+
+  // An icon file as PNG bytes (base64), for icons the theme has as SVG only. Small and rare: the client caches by path.
+  _iconPng(req) {
+    if (typeof req.path !== 'string' || !req.path.startsWith('/'))
+      throw badRequest('"path" must be an absolute file path');
+    const size = typeof req.size === 'number' && req.size > 0 ? Math.min(Math.round(req.size), 256) : 48;
+    const pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_size(req.path, size, size);
+    const [, bytes] = pixbuf.save_to_bufferv('png', [], []);
+    return {png: GLib.base64_encode(bytes), width: pixbuf.get_width(), height: pixbuf.get_height()};
   }
 
   _showDesktop(req) {

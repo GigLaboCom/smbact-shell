@@ -1,0 +1,34 @@
+name: release
+
+# A tag vX.Y.Z publishes the extension zip and its sha256 as a GitHub release. SMBAct pins a tag and checks the
+# sha256 of the zip it downloads. The tag must match "version-name" in metadata.json.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches metadata.json
+        run: |
+          want="v$(python3 -c "import json; print(json.load(open('gnome-shell/smbact@giglabo.com/metadata.json'))['version-name'])")"
+          if [ "$want" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match metadata.json version-name ($want)" >&2
+            exit 1
+          fi
+      - name: Pack
+        run: |
+          scripts/pack.sh
+          (cd dist && sha256sum ./*.zip > SHA256SUMS && cat SHA256SUMS)
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.zip dist/SHA256SUMS \
+            --title "smbact-shell $GITHUB_REF_NAME" \
+            --notes "GNOME Shell extension smbact@giglabo.com, protocol com.giglabo.SMBAct.Shell1 API 1. See PROTOCOL.md."
