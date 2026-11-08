@@ -269,7 +269,9 @@ class Service {
     const id = req.id;
     if (typeof id !== 'number' || !Number.isFinite(id))
       throw badRequest('"id" must be a number');
-    const w = allWindows().find(x => x.get_id() === id);
+    // the compositor's id, or the X11 id of an XWayland window (SMBAct knows its own windows by that)
+    const windows = allWindows();
+    const w = windows.find(x => x.get_id() === id) ?? windows.find(x => x11WindowId(x) === id);
     if (!w)
       throw new ShellError('NO_WINDOW', `no window ${id}`);
     return w;

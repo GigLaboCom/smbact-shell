@@ -76,7 +76,8 @@ XWayland. Rectangles are `{ "x", "y", "width", "height" }`.
 }
 ```
 
-- `id`: the compositor's window id, unique in the session (fits in a JSON number).
+- `id`: the compositor's window id, unique in the session (fits in a JSON number). Requests also accept the X11 id
+  of an XWayland window as `id`.
 - `client`: `wayland` or `x11`; `x11Window`: the X11 window id of an XWayland window, else `null`.
 - `type`: `normal`, `dialog`, `modal-dialog`, `utility`, `splashscreen`, `menu`, `toolbar`, `desktop`, `dock`, or
   `other`. The plugin lists every managed window; the client picks what it shows.
