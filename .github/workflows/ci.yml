@@ -20,6 +20,9 @@ jobs:
         run: |
           cp "gnome-shell/smbact@giglabo.com/extension.js" "$RUNNER_TEMP/extension.mjs"
           node --check "$RUNNER_TEMP/extension.mjs"
+          cp "gnome-shell/smbact@giglabo.com/snapshots.js" "$RUNNER_TEMP/snapshots.mjs"
+          node --check "$RUNNER_TEMP/snapshots.mjs"
+          node --check kwin/smbact-kwin.js
           python3 -m py_compile scripts/call.py
           python3 -c "import json; json.load(open('gnome-shell/smbact@giglabo.com/metadata.json'))"
       - name: Pack
@@ -27,4 +30,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: smbact-shell-gnome
-          path: dist/*.zip
+          path: |
+            dist/*.zip
+            dist/smbact-kwin.js

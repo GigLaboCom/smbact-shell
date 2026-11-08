@@ -1,7 +1,8 @@
 # Protocol: `com.giglabo.SMBAct.Shell1`, API 1
 
-How SMBAct talks to its shell plugins. The GNOME Shell extension implements it today; a KWin script will
-implement the same operations. SMBAct (a separate program) is the only intended client.
+How SMBAct talks to its shell plugins: the GNOME Shell extension (`gnome-shell/`) and the KWin script (`kwin/`,
+Plasma 6) implement the same operations with the same JSON; only the transport differs (see "KWin transport"). SMBAct
+(a separate program) is the only intended client.
 
 ## D-Bus
 
@@ -157,3 +158,30 @@ XWayland. Rectangles are `{ "x", "y", "width", "height" }`.
 - API 1, plugin 1.0.0-alpha.2 (2026-11): `grabAccelerator`, `ungrabAccelerator`, the `accelerator` event (new
   operations, same API; clients look for them in `hello`'s `ops`).
 - API 1, plugin 1.0.0-alpha.3 (2026-11): `snapshots`, `snapshot`, the `snapshot` event.
+
+## KWin transport
+
+A KWin script cannot own a D-Bus name or serve calls, so the direction turns around. SMBAct owns
+`com.giglabo.SMBAct`, serves the interface `com.giglabo.SMBAct.KWin1` on `/com/giglabo/SMBAct/KWin1` and loads
+`smbact-kwin.js` into KWin through `org.kde.KWin` `/Scripting` (`loadScript(path, "smbact")`, then
+`/Scripting/Script<id>` `run`): no install, no new login. The script calls in:
+
+| method | | |
+|---|---|---|
+| `Hello(s hello)` | once, when the script runs | `hello` is the `hello` operation's result (`plugin: "smbact-kwin"`) |
+| `Next(s reply) -> s request` | in a loop | hands over the reply to the previous request (empty the first time) and gets the next request; SMBAct holds the call until it has one and answers `{"op":"noop"}` after 15 s (Qt's D-Bus timeout is 25 s) |
+| `Event(s event)` | fire and forget | the events above (`windowsChanged` at most every 100 ms and after a drag, `focusChanged`) |
+
+Requests and replies carry `seq` (the transport pairs them by it; `id` stays a request argument). SMBAct accepts the
+calls only from the owner of `org.kde.KWin`. When SMBAct goes away the script's calls fail and its loop ends; SMBAct
+unloads it when it quits and loads it again when it starts or when KWin restarts.
+
+What the KWin script does not have: `snapshots` / `snapshot` (KWin offers window screenshots only through
+`org.kde.KWin.ScreenShot2`, which takes a file descriptor and an authorized caller), `grabAccelerator` (on Plasma
+SMBAct's own X11 hotkeys fire with any focus: KWin passes key combinations to XWayland apps), `iconPng` (a window's
+icon is a QIcon: the script reports `desktopFile` and SMBAct looks the icon up), and the X11 marks (`client`,
+`x11Window` are `null`: KWin's scripting API does not tell X11 from Wayland windows; SMBAct matches them against the X
+server's own list). Window ids are the first 32 bits of KWin's UUID for the window (stable across reloads).
+
+- API 1, plugin 1.0.0-alpha.3 (2026-11): the KWin script (`kwin/smbact-kwin.js`).
+
