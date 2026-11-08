@@ -29,6 +29,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/*.zip dist/SHA256SUMS \
+          # a tag with a suffix (v1.0.0-alpha.1, -beta.2, -rc.1) is a pre-release
+          pre=""
+          case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/*.zip dist/SHA256SUMS $pre \
             --title "smbact-shell $GITHUB_REF_NAME" \
             --notes "GNOME Shell extension smbact@giglabo.com, protocol com.giglabo.SMBAct.Shell1 API 1. See PROTOCOL.md."

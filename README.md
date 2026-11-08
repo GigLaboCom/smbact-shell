@@ -26,7 +26,7 @@ everyone else.
 
 ## Releases
 
-A tag `vX.Y.Z` (equal to `version-name` in `metadata.json`) makes GitHub Actions publish
+A tag `vX.Y.Z` (equal to `version-name` in `metadata.json`; `vX.Y.Z-alpha.N`, `-beta.N`, `-rc.N` become pre-releases) makes GitHub Actions publish
 `smbact@giglabo.com.shell-extension.zip` and `SHA256SUMS` as a release. SMBAct pins a tag and checks the sha256.
 Every push to `main` and every pull request runs the checks and packs the zip (`.github/workflows/`).
 
