@@ -33,7 +33,8 @@ is not running; GNOME's own allow-lists have the same limit.
 ```
 
 Error codes: `BAD_REQUEST` (not JSON, missing or wrong arguments), `UNKNOWN_OP`, `NO_WINDOW`, `GRAB_FAILED`
-(`grabAccelerator`: the shell refused the accelerator), `FAILED` (the shell threw; `message` has its text).
+(`grabAccelerator`: the shell refused the accelerator), `NO_SNAPSHOT` (`snapshot`: none taken yet), `FAILED` (the
+shell threw; `message` has its text).
 
 Unknown fields in a request are ignored; new optional fields and new operations do not change the API number. A
 change that breaks an existing operation does, and `hello` reports which API the plugin speaks.
@@ -106,6 +107,8 @@ XWayland. Rectangles are `{ "x", "y", "width", "height" }`.
 | `pointer` | | `{ x, y }` |
 | `grabAccelerator` | `accelerator` (GTK notation, `<Control><Alt>x`) | `{ accelerator, action }` |
 | `ungrabAccelerator` | `accelerator` (as grabbed) | `{ released }` |
+| `snapshots` | `ids`, `maxSize?` (px, default 480, at most 1024), `background?` (`#rrggbb`, default white) | `{ snapshots: Snapshot[] }` (the cached ones) |
+| `snapshot` | `id` | `{ snapshot }` |
 
 - `setState` states: `minimized`, `maximized`, `maximizedHorizontally`, `maximizedVertically`, `fullscreen`,
   `above`.
@@ -122,6 +125,13 @@ XWayland. Rectangles are `{ "x", "y", "width", "height" }`.
   custom shortcuts: it fires on the desktop and in the overview, never on the lock or login screen. Each press sends
   an `accelerator` event. It fails with `GRAB_FAILED` when another shortcut (GNOME's own, a custom one, another
   extension's) has the combination, or when Mutter cannot parse it. Grabbing the same string again is a no-op.
+- `snapshots` answers at once with the snapshots it has; the ones that are missing, stale (the window was damaged
+  or resized since) or of another size are taken one at a time when the shell is idle, and each sends a `snapshot`
+  event; fetch it with `snapshot`. A snapshot costs the compositor about a frame, so they are never taken on a timer.
+  The window that just lost the focus is taken quietly (no event) a moment later when its snapshot is stale.
+  Minimized windows keep their last snapshot. A `Snapshot` is `{ id, mime, data, width, height, fresh }`: `data` is
+  base64 JPEG of the visible window (the frame rect, without a client-side shadow), scaled to fit `maxSize`, over
+  `background`; `fresh` is false when the window changed since it was taken.
 - Grabs belong to the client: the plugin releases all of them when the owner of `com.giglabo.SMBAct` goes away or
   changes, and when it is disabled. A client that starts again grabs again.
 - GNOME disables every user extension while the screen is locked and enables them again after the unlock (seen on
@@ -139,9 +149,11 @@ XWayland. Rectangles are `{ "x", "y", "width", "height" }`.
 - `focusChanged` with `id` (or `null`).
 - `accelerator` with `accelerator` (the string given to `grabAccelerator`) and `time` (the key press's timestamp,
   usable as `activate`'s `time`).
+- `snapshot` with `id`: a snapshot asked for with `snapshots` is ready.
 
 ## History
 
 - API 1 (2026-11): window list, geometry, activation, states, close, displays, pointer, events.
 - API 1, plugin 1.0.0-alpha.2 (2026-11): `grabAccelerator`, `ungrabAccelerator`, the `accelerator` event (new
   operations, same API; clients look for them in `hello`'s `ops`).
+- API 1, plugin 1.0.0-alpha.3 (2026-11): `snapshots`, `snapshot`, the `snapshot` event.
