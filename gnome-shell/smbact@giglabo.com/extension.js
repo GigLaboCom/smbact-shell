@@ -5,6 +5,7 @@
 // - windows come from display.list_all_windows(), not global.get_window_actors() (other extensions patch that one);
 // - activation uses the server's current time (time 0 may not get the focus);
 // - global hotkeys are Mutter accelerator grabs owned by the current client: released when it goes away;
+// - window snapshots cost a frame each: cached, retaken only when stale, one per idle turn (snapshots.js);
 // - no synchronous work beyond one frame, every request in try/catch, everything undone in disable(): a hang
 //   freezes the desktop and a crash ends the session.
 import GdkPixbuf from 'gi://GdkPixbuf';
@@ -17,6 +18,7 @@ import St from 'gi://St';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as Config from 'resource:///org/gnome/shell/misc/config.js';
+import {Snapshots} from './snapshots.js';
 
 const API = 1;
 const BUS_NAME = 'com.giglabo.SMBAct.Shell';
@@ -126,6 +128,8 @@ class Service {
     /** accelerator (as the client sent it) -> Mutter action id; action id -> accelerator */
     this._grabs = new Map();
     this._grabActions = new Map();
+    this._snapshots = null;
+    this._focus = null;
     this._ops = {
       hello: () => this._hello(),
       listWindows: req => this._listWindows(req),
@@ -149,6 +153,18 @@ class Service {
       },
       grabAccelerator: req => this._grabAccelerator(req),
       ungrabAccelerator: req => this._ungrabAccelerator(req),
+      snapshots: req => {
+        if (!Array.isArray(req.ids))
+          throw badRequest('"ids" must be an array of window ids');
+        const ids = req.ids.filter(id => typeof id === 'number' && Number.isFinite(id));
+        return {snapshots: this._snapshots.request(ids, req.maxSize, req.background)};
+      },
+      snapshot: req => {
+        const snapshot = this._snapshots.get(this._number(req, 'id'));
+        if (!snapshot)
+          throw new ShellError('NO_SNAPSHOT', `no snapshot of window ${req.id} yet`);
+        return {snapshot};
+      },
     };
   }
 
@@ -168,13 +184,20 @@ class Service {
         this._clientOwner = null;
       });
     const d = global.display;
+    this._snapshots = new Snapshots(event => this._emit(event), id => this._findWindow(id));
+    this._focus = d.focus_window;
     this._displaySignals = [
       d.connect('window-created', (_d, w) => {
         this._watchWindow(w);
         this._windowsChanged();
       }),
       d.connect('restacked', () => this._windowsChanged()),
-      d.connect('notify::focus-window', () => this._emit({type: 'focusChanged', id: d.focus_window?.get_id() ?? null})),
+      d.connect('notify::focus-window', () => {
+        const left = this._focus;
+        this._focus = d.focus_window;
+        this._snapshots?.focusLeft(left);
+        this._emit({type: 'focusChanged', id: d.focus_window?.get_id() ?? null});
+      }),
       d.connect('accelerator-activated', (_d, action, ...rest) => this._acceleratorActivated(action, rest[rest.length - 1])),
     ];
     for (const w of allWindows())
@@ -183,6 +206,9 @@ class Service {
 
   stop() {
     this._releaseGrabs();
+    this._snapshots?.stop();
+    this._snapshots = null;
+    this._focus = null;
     for (const id of this._displaySignals)
       global.display.disconnect(id);
     this._displaySignals = [];
@@ -357,12 +383,16 @@ class Service {
     const id = req.id;
     if (typeof id !== 'number' || !Number.isFinite(id))
       throw badRequest('"id" must be a number');
-    // the compositor's id, or the X11 id of an XWayland window (SMBAct knows its own windows by that)
-    const windows = allWindows();
-    const w = windows.find(x => x.get_id() === id) ?? windows.find(x => x11WindowId(x) === id);
+    const w = this._findWindow(id);
     if (!w)
       throw new ShellError('NO_WINDOW', `no window ${id}`);
     return w;
+  }
+
+  /** The compositor's id, or the X11 id of an XWayland window (SMBAct knows its own windows by that). */
+  _findWindow(id) {
+    const windows = allWindows();
+    return windows.find(x => x.get_id() === id) ?? windows.find(x => x11WindowId(x) === id) ?? null;
   }
 
   _number(req, key) {

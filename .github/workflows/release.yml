@@ -21,10 +21,15 @@ jobs:
             echo "tag $GITHUB_REF_NAME does not match metadata.json version-name ($want)" >&2
             exit 1
           fi
+          kwin="v$(sed -n 's/^const VERSION = "\(.*\)";$/\1/p' kwin/smbact-kwin.js)"
+          if [ "$kwin" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match kwin/smbact-kwin.js VERSION ($kwin)" >&2
+            exit 1
+          fi
       - name: Pack
         run: |
           scripts/pack.sh
-          (cd dist && sha256sum ./*.zip > SHA256SUMS && cat SHA256SUMS)
+          (cd dist && sha256sum ./*.zip ./smbact-kwin.js > SHA256SUMS && cat SHA256SUMS)
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -32,6 +37,6 @@ jobs:
           # a tag with a suffix (v1.0.0-alpha.1, -beta.2, -rc.1) is a pre-release
           pre=""
           case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" dist/*.zip dist/SHA256SUMS $pre \
+          gh release create "$GITHUB_REF_NAME" dist/*.zip dist/smbact-kwin.js dist/SHA256SUMS $pre \
             --title "smbact-shell $GITHUB_REF_NAME" \
-            --notes "GNOME Shell extension smbact@giglabo.com, protocol com.giglabo.SMBAct.Shell1 API 1. See PROTOCOL.md."
+            --notes "GNOME Shell extension smbact@giglabo.com and the KWin script smbact-kwin.js, protocol API 1. See PROTOCOL.md."
