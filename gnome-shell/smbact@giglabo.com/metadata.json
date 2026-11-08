@@ -1,9 +1,9 @@
 {
   "uuid": "smbact@giglabo.com",
   "name": "SMBAct",
-  "description": "Lets the SMBAct app see and arrange every window on Wayland: the window list, moving and resizing, activation and window states, over D-Bus. It does nothing on its own; SMBAct installs and uses it.",
+  "description": "Lets the SMBAct app see and arrange every window on Wayland: the window list, moving and resizing, activation, window states and global hotkeys, over D-Bus. It does nothing on its own; SMBAct installs and uses it.",
   "shell-version": ["46", "47", "48", "49", "50", "51"],
   "url": "https://github.com/GigLaboCom/smbact-shell",
-  "version": 1,
-  "version-name": "1.0.0-alpha.1"
+  "version": 2,
+  "version-name": "1.0.0-alpha.2"
 }

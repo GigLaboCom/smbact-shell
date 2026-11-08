@@ -4,6 +4,7 @@
 // the app. Rules it follows (all seen on GNOME 50):
 // - windows come from display.list_all_windows(), not global.get_window_actors() (other extensions patch that one);
 // - activation uses the server's current time (time 0 may not get the focus);
+// - global hotkeys are Mutter accelerator grabs owned by the current client: released when it goes away;
 // - no synchronous work beyond one frame, every request in try/catch, everything undone in disable(): a hang
 //   freezes the desktop and a crash ends the session.
 import GdkPixbuf from 'gi://GdkPixbuf';
@@ -23,6 +24,11 @@ const OBJECT_PATH = '/com/giglabo/SMBAct/Shell1';
 /** Only the current owner of this name may call (the SMBAct app requests it). */
 const CLIENT_NAME = 'com.giglabo.SMBAct';
 const EVENT_COALESCE_MS = 100;
+/**
+ * Where SMBAct's hotkeys fire: the desktop and the overview, like GNOME's custom shortcuts; never on the lock or
+ * login screen or behind a system dialog.
+ */
+const HOTKEY_ACTION_MODE = Shell.ActionMode.NORMAL | Shell.ActionMode.OVERVIEW;
 
 const IFACE_XML = `
 <node>
@@ -117,6 +123,9 @@ class Service {
     this._windowSignals = new Map();
     this._displaySignals = [];
     this._eventTimer = 0;
+    /** accelerator (as the client sent it) -> Mutter action id; action id -> accelerator */
+    this._grabs = new Map();
+    this._grabActions = new Map();
     this._ops = {
       hello: () => this._hello(),
       listWindows: req => this._listWindows(req),
@@ -138,6 +147,8 @@ class Service {
         const [x, y] = global.get_pointer();
         return {x, y};
       },
+      grabAccelerator: req => this._grabAccelerator(req),
+      ungrabAccelerator: req => this._ungrabAccelerator(req),
     };
   }
 
@@ -147,9 +158,13 @@ class Service {
     this._nameId = Gio.bus_own_name_on_connection(Gio.DBus.session, BUS_NAME, Gio.BusNameOwnerFlags.NONE, null, null);
     this._watchId = Gio.bus_watch_name_on_connection(Gio.DBus.session, CLIENT_NAME, Gio.BusNameWatcherFlags.NONE,
       (_c, _name, owner) => {
+        // grabs belong to the client that made them: a new owner starts without any
+        if (this._clientOwner !== owner)
+          this._releaseGrabs();
         this._clientOwner = owner;
       },
       () => {
+        this._releaseGrabs();
         this._clientOwner = null;
       });
     const d = global.display;
@@ -160,12 +175,14 @@ class Service {
       }),
       d.connect('restacked', () => this._windowsChanged()),
       d.connect('notify::focus-window', () => this._emit({type: 'focusChanged', id: d.focus_window?.get_id() ?? null})),
+      d.connect('accelerator-activated', (_d, action, ...rest) => this._acceleratorActivated(action, rest[rest.length - 1])),
     ];
     for (const w of allWindows())
       this._watchWindow(w);
   }
 
   stop() {
+    this._releaseGrabs();
     for (const id of this._displaySignals)
       global.display.disconnect(id);
     this._displaySignals = [];
@@ -195,6 +212,27 @@ class Service {
   // ---- D-Bus
 
   CallAsync([request], invocation) {
+    if (this._clientOwner) {
+      this._answer(request, invocation);
+      return;
+    }
+    // Just enabled (GNOME re-enables extensions after every unlock): the name watcher may not have reported the
+    // client yet, and SMBAct grabs its hotkeys again right away. Ask the bus instead of refusing.
+    Gio.DBus.session.call('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus', 'GetNameOwner',
+      new GLib.Variant('(s)', [CLIENT_NAME]), new GLib.VariantType('(s)'), Gio.DBusCallFlags.NONE, 1000, null,
+      (connection, result) => {
+        let owner = null;
+        try {
+          [owner] = connection.call_finish(result).deepUnpack();
+        } catch {
+          // no owner
+        }
+        this._clientOwner ??= owner;
+        this._answer(request, invocation);
+      });
+  }
+
+  _answer(request, invocation) {
     if (!this._clientOwner || invocation.get_sender() !== this._clientOwner) {
       invocation.return_dbus_error('org.freedesktop.DBus.Error.AccessDenied', 'Call is not allowed');
       return;
@@ -250,6 +288,56 @@ class Service {
       }),
     ];
     this._windowSignals.set(w, ids);
+  }
+
+  // ---- hotkeys (Mutter accelerator grabs, the way GNOME grabs custom shortcuts for gnome-settings-daemon)
+
+  _acceleratorActivated(action, time) {
+    const accelerator = this._grabActions.get(action);
+    if (accelerator === undefined)
+      return; // another grab (gnome-settings-daemon's)
+    this._emit({type: 'accelerator', accelerator, time: typeof time === 'number' ? time : 0});
+  }
+
+  _grabAccelerator(req) {
+    const accelerator = req.accelerator;
+    if (typeof accelerator !== 'string' || !accelerator)
+      throw badRequest('"accelerator" must be a GTK accelerator such as "<Control><Alt>x"');
+    const existing = this._grabs.get(accelerator);
+    if (existing !== undefined)
+      return {accelerator, action: existing};
+    const action = global.display.grab_accelerator(accelerator, Meta.KeyBindingFlags.NONE);
+    if (action === Meta.KeyBindingAction.NONE) {
+      throw new ShellError('GRAB_FAILED',
+        `GNOME Shell did not grab "${accelerator}": another shortcut has it, or it is not a valid accelerator`);
+    }
+    Main.wm.allowKeybinding(Meta.external_binding_name_for_action(action), HOTKEY_ACTION_MODE);
+    this._grabs.set(accelerator, action);
+    this._grabActions.set(action, accelerator);
+    return {accelerator, action};
+  }
+
+  _ungrabAccelerator(req) {
+    const accelerator = req.accelerator;
+    if (typeof accelerator !== 'string' || !accelerator)
+      throw badRequest('"accelerator" must be a string');
+    const action = this._grabs.get(accelerator);
+    if (action === undefined)
+      return {released: false};
+    this._ungrab(accelerator, action);
+    return {released: true};
+  }
+
+  _ungrab(accelerator, action) {
+    this._grabs.delete(accelerator);
+    this._grabActions.delete(action);
+    tryOr(() => Main.wm.allowKeybinding(Meta.external_binding_name_for_action(action), Shell.ActionMode.NONE));
+    tryOr(() => global.display.ungrab_accelerator(action));
+  }
+
+  _releaseGrabs() {
+    for (const [accelerator, action] of [...this._grabs])
+      this._ungrab(accelerator, action);
   }
 
   // ---- operations

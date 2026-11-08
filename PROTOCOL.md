@@ -32,8 +32,8 @@ is not running; GNOME's own allow-lists have the same limit.
 { "ok": false, "error": { "code": "NO_WINDOW", "message": "no window 2653220665" } }
 ```
 
-Error codes: `BAD_REQUEST` (not JSON, missing or wrong arguments), `UNKNOWN_OP`, `NO_WINDOW`, `FAILED` (the shell
-threw; `message` has its text).
+Error codes: `BAD_REQUEST` (not JSON, missing or wrong arguments), `UNKNOWN_OP`, `NO_WINDOW`, `GRAB_FAILED`
+(`grabAccelerator`: the shell refused the accelerator), `FAILED` (the shell threw; `message` has its text).
 
 Unknown fields in a request are ignored; new optional fields and new operations do not change the API number. A
 change that breaks an existing operation does, and `hello` reports which API the plugin speaks.
@@ -104,6 +104,8 @@ XWayland. Rectangles are `{ "x", "y", "width", "height" }`.
 | `displays` | | `{ monitors: [{ index, geometry, workArea, scale, primary }] }` |
 | `iconPng` | `path` (an `icon` path), `size?` (px, default 48) | `{ png, width, height }` (`png`: base64 PNG bytes) |
 | `pointer` | | `{ x, y }` |
+| `grabAccelerator` | `accelerator` (GTK notation, `<Control><Alt>x`) | `{ accelerator, action }` |
+| `ungrabAccelerator` | `accelerator` (as grabbed) | `{ released }` |
 
 - `setState` states: `minimized`, `maximized`, `maximizedHorizontally`, `maximizedVertically`, `fullscreen`,
   `above`.
@@ -116,6 +118,16 @@ XWayland. Rectangles are `{ "x", "y", "width", "height" }`.
   with `getWindow` (or wait for `windowsChanged`) when the new one matters.
 - `activate` uses the server's current time unless `time` is given (an input event's timestamp).
 - `close` asks the window to close; `force` kills its client.
+- `grabAccelerator` makes the accelerator a global hotkey, whatever window has the focus, the way GNOME grabs its
+  custom shortcuts: it fires on the desktop and in the overview, never on the lock or login screen. Each press sends
+  an `accelerator` event. It fails with `GRAB_FAILED` when another shortcut (GNOME's own, a custom one, another
+  extension's) has the combination, or when Mutter cannot parse it. Grabbing the same string again is a no-op.
+- Grabs belong to the client: the plugin releases all of them when the owner of `com.giglabo.SMBAct` goes away or
+  changes, and when it is disabled. A client that starts again grabs again.
+- GNOME disables every user extension while the screen is locked and enables them again after the unlock (seen on
+  GNOME 50), so the plugin's bus name goes away and comes back without any grabs. Clients watch
+  `com.giglabo.SMBAct.Shell` (`NameOwnerChanged`) and grab again when it reappears. The hotkeys do not fire on the
+  lock screen anyway.
 - `showDesktop` with `show: true` minimizes the visible windows of the active workspace and remembers them; `false`
   restores those.
 
@@ -125,7 +137,11 @@ XWayland. Rectangles are `{ "x", "y", "width", "height" }`.
 
 - `windowsChanged`: a window appeared, went away, moved, resized or changed state (coalesced, at most every 100 ms).
 - `focusChanged` with `id` (or `null`).
+- `accelerator` with `accelerator` (the string given to `grabAccelerator`) and `time` (the key press's timestamp,
+  usable as `activate`'s `time`).
 
 ## History
 
 - API 1 (2026-11): window list, geometry, activation, states, close, displays, pointer, events.
+- API 1, plugin 1.0.0-alpha.2 (2026-11): `grabAccelerator`, `ungrabAccelerator`, the `accelerator` event (new
+  operations, same API; clients look for them in `hello`'s `ops`).
