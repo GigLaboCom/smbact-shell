@@ -11,7 +11,7 @@ const SERVICE = "com.giglabo.SMBAct";
 const PATH = "/com/giglabo/SMBAct/KWin1";
 const IFACE = "com.giglabo.SMBAct.KWin1";
 const API = 1;
-const VERSION = "1.0.0-alpha.3";
+const VERSION = "2.0.0";
 /** At most one windowsChanged event this often (a drag moves a window every frame); the end of a drag sends one too. */
 const EVENT_MIN_INTERVAL_MS = 100;
 
