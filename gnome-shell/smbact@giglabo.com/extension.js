@@ -58,6 +58,27 @@ const badRequest = message => new ShellError('BAD_REQUEST', message);
 
 const isWayland = () => typeof Meta.is_wayland_compositor !== 'function' || Meta.is_wayland_compositor();
 
+/**
+ * Monitor index (as in global.display) -> connector name ("DP-1", "Virtual-1"), from Mutter's monitor manager:
+ * get_monitors() and MetaMonitor.get_connector() (public since Mutter 46), get_monitor_for_connector() for the index
+ * (as GNOME's own monitor labeler does). A mirrored pair keeps its first connector; empty when Mutter lacks the API.
+ */
+const monitorConnectors = () => {
+  const out = new Map();
+  tryOr(() => {
+    const manager = global.backend.get_monitor_manager();
+    for (const m of manager.get_monitors()) {
+      if (typeof m.is_active === 'function' && !m.is_active())
+        continue;
+      const connector = m.get_connector();
+      const index = connector ? manager.get_monitor_for_connector(connector) : -1;
+      if (index >= 0 && !out.has(index))
+        out.set(index, connector);
+    }
+  });
+  return out;
+};
+
 const maximizeFlags = w => {
   if (typeof w.get_maximize_flags === 'function')
     return w.get_maximize_flags();
@@ -430,6 +451,7 @@ class Service {
     const frame = w.get_frame_rect();
     const flags = tryOr(() => maximizeFlags(w), 0) ?? 0;
     const workspace = tryOr(() => w.get_workspace());
+    const active = global.workspace_manager.get_active_workspace();
     return {
       id: w.get_id(),
       title: w.get_title() ?? '',
@@ -455,6 +477,7 @@ class Service {
       monitor: w.get_monitor(),
       workspace: workspace ? workspace.index() : -1,
       onAllWorkspaces: tryOr(() => w.is_on_all_workspaces(), false),
+      onActiveWorkspace: tryOr(() => w.located_on_workspace(active), false),
       stack,
       icon: icons ? this._icon(w, iconSize) : null,
     };
@@ -575,6 +598,7 @@ class Service {
   _displays() {
     const d = global.display;
     const ws = global.workspace_manager.get_active_workspace();
+    const connectors = monitorConnectors();
     const monitors = [];
     for (let i = 0; i < d.get_n_monitors(); i++) {
       monitors.push({
@@ -583,6 +607,7 @@ class Service {
         workArea: rect(ws.get_work_area_for_monitor(i)),
         scale: d.get_monitor_scale(i),
         primary: i === d.get_primary_monitor(),
+        connector: connectors.get(i) ?? null,
       });
     }
     return {monitors};

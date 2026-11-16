@@ -102,12 +102,14 @@ function describe(w, stack) {
     maximized: mode === 3,
     maximizedHorizontally: (mode & 2) !== 0,
     maximizedVertically: (mode & 1) !== 0,
+    tiled: !!w.tile, // a quick tile or a custom tile: KWin keeps maximizeMode 0 for it
     fullscreen: !!w.fullScreen,
     above: !!w.keepAbove,
     skipTaskbar: !!w.skipTaskbar,
     monitor: screenIndex(w.output),
     workspace: desktopIndex(w),
     onAllWorkspaces: !!w.onAllDesktops,
+    onActiveWorkspace: !!w.onAllDesktops || (w.desktops || []).indexOf(workspace.currentDesktop) >= 0,
     stack: stack === undefined ? null : stack,
     icon: null, // a QIcon, not a file: SMBAct looks the app's icon up by its desktop file
     desktopFile: w.desktopFileName || null,
@@ -205,6 +207,7 @@ function displays() {
       workArea: rect(workspace.clientArea(KWin.MaximizeArea, o, workspace.currentDesktop)),
       scale: o.devicePixelRatio || 1,
       primary: i === 0, // KWin has no primary output; the first one is the one Plasma treats as such
+      connector: o.name || null, // the connector ("DP-1", "Virtual-1")
     });
   }
   return { monitors: monitors };

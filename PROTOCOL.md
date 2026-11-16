@@ -73,6 +73,7 @@ XWayland. Rectangles are `{ "x", "y", "width", "height" }`.
   "monitor": 0,
   "workspace": 0,
   "onAllWorkspaces": false,
+  "onActiveWorkspace": true,
   "stack": 4,
   "icon": "/usr/share/icons/hicolor/48x48/apps/firefox.png"
 }
@@ -86,6 +87,15 @@ XWayland. Rectangles are `{ "x", "y", "width", "height" }`.
 - `frame`: the visible window including server-side decorations; `clientRect`: the client area (larger than `frame`
   when the window draws its own shadow).
 - `stack`: position in the stacking order, 0 = bottom.
+- `workspace`: the index of the window's workspace (KWin: virtual desktop), 0 = the first; `-1` when it is on more than
+  one (KWin) or Mutter gives none. On GNOME a window on all workspaces reports the active one, so read it with
+  `onAllWorkspaces`.
+- `tiled` (KWin, plugin 2.1.0 and later): the window sits in a KWin tile (quick tile or a custom tile), which KWin
+  does not count as maximized (`maximizedVertically` stays false). The GNOME extension leaves it out: a Mutter tile is
+  a vertical maximize and shows as `maximizedVertically`.
+- `onActiveWorkspace` (plugin 2.1.0 and later): the window is on the workspace showing now, or on all of them (GNOME:
+  `located_on_workspace`, which also counts the windows of secondary monitors when workspaces are on the primary only).
+  Absent from older plugins.
 - `icon`: a file path from the icon theme, PNG when the theme has one (only when asked for, see `listWindows`), or
   `null`. `iconPng` turns any icon file (SVG too) into PNG bytes.
 
@@ -103,7 +113,7 @@ XWayland. Rectangles are `{ "x", "y", "width", "height" }`.
 | `setState` | `id`, `state`, `on` | `{ window }` |
 | `close` | `id`, `force?` | `{ closed: true }` |
 | `showDesktop` | `show` | `{ windows }` (how many were minimized or restored) |
-| `displays` | | `{ monitors: [{ index, geometry, workArea, scale, primary }] }` |
+| `displays` | | `{ monitors: [{ index, geometry, workArea, scale, primary, connector }] }` |
 | `iconPng` | `path` (an `icon` path), `size?` (px, default 48) | `{ png, width, height }` (`png`: base64 PNG bytes) |
 | `pointer` | | `{ x, y }` |
 | `grabAccelerator` | `accelerator` (GTK notation, `<Control><Alt>x`) | `{ accelerator, action }` |
@@ -113,6 +123,9 @@ XWayland. Rectangles are `{ "x", "y", "width", "height" }`.
 
 - `setState` states: `minimized`, `maximized`, `maximizedHorizontally`, `maximizedVertically`, `fullscreen`,
   `above`.
+- `displays`: `connector` (plugin 2.1.0 and later) is the output's connector name (`DP-1`, `HDMI-A-1`, `Virtual-1`:
+  GNOME from Mutter's monitor manager, KWin `Output.name`), `null` when the shell does not tell; absent from older
+  plugins. It stays the same while the monitor stays on that port.
 - `moveResize` takes the frame rect, or with `space: "client"` the client rect (the compositor converts it with the
   window's own decorations and shadow).
 - `moveResize` leaves maximized and fullscreen first, then moves and resizes in two steps, so windows with resize
@@ -158,6 +171,8 @@ XWayland. Rectangles are `{ "x", "y", "width", "height" }`.
 - API 1, plugin 1.0.0-alpha.2 (2026-11): `grabAccelerator`, `ungrabAccelerator`, the `accelerator` event (new
   operations, same API; clients look for them in `hello`'s `ops`).
 - API 1, plugin 1.0.0-alpha.3 (2026-11): `snapshots`, `snapshot`, the `snapshot` event.
+- API 1, plugin 2.1.0 (unreleased): `connector` in `displays`, `onActiveWorkspace` and (KWin) `tiled` in the window
+  (new optional fields, same API).
 - API 1, plugin 2.0.0 (2026-11): the first full release, with SMBAct 2.0.0; the same API as 1.0.0-alpha.3.
 
 ## KWin transport
