@@ -10,6 +10,8 @@ not running (it owns the name then).
     scripts/call.py --events 10          # print Event signals for 10 seconds
     scripts/call.py --grab '<Control><Alt>j' 30   # hold a hotkey for 30 seconds, print its presses
     scripts/call.py --snapshots /tmp/shots 480       # snapshot every listed window into /tmp/shots, print timings
+    scripts/call.py --drag table.json 60 [WxH]        # watch drags against a zone table for 60 s, print the events;
+                                                     # with WxH every drag also gets dragRestoreSize W, H
     scripts/call.py --as-stranger hello  # without the name: expect AccessDenied
 """
 import json
@@ -31,6 +33,8 @@ def main(argv):
         return snapshots(argv[1] if len(argv) > 1 else "/tmp/smbact-shots", int(argv[2]) if len(argv) > 2 else 480)
     if argv[0] == "--grab":
         return grab(argv[1], int(argv[2]) if len(argv) > 2 else 30)
+    if argv[0] == "--drag":
+        return drag(argv[1], int(argv[2]) if len(argv) > 2 else 60, argv[3] if len(argv) > 3 else None)
     if argv[0] == "--events":
         from gi.repository import GLib
         dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
@@ -125,6 +129,40 @@ def grab(accelerator, seconds):
     GLib.timeout_add_seconds(seconds, loop.quit)
     loop.run()
     print(call(json.dumps({"op": "ungrabAccelerator", "accelerator": accelerator})), flush=True)
+    return 0
+
+
+def drag(table_file, seconds, restore):
+    """The drag watch belongs to the owner of com.giglabo.SMBAct: keep the name while listening, stop the watch after."""
+    import time
+    from gi.repository import GLib
+    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+    bus = dbus.SessionBus()
+    got = bus.request_name(CLIENT, dbus.bus.NAME_FLAG_DO_NOT_QUEUE)
+    if got not in (dbus.bus.REQUEST_NAME_REPLY_PRIMARY_OWNER, dbus.bus.REQUEST_NAME_REPLY_ALREADY_OWNER):
+        print(f"cannot own {CLIENT} (is SMBAct running?)", file=sys.stderr)
+        return 1
+    call = bus.get_object(DEST, PATH).get_dbus_method("Call", IFACE)
+    with open(table_file) as f:
+        table = json.load(f)
+    print(call(json.dumps({"op": "dragWatch", "table": table})), flush=True)
+    size = [int(v) for v in restore.split("x")] if restore else None
+    t0 = time.monotonic()
+
+    def on_event(e):
+        event = json.loads(e)
+        if event.get("type") != "drag":
+            return
+        d = event["event"]
+        print(json.dumps({"at_ms": round((time.monotonic() - t0) * 1000), **d}), flush=True)
+        if size and d.get("type") == "begin":
+            print(call(json.dumps({"op": "dragRestoreSize", "drag": d["drag"], "width": size[0], "height": size[1]})), flush=True)
+
+    bus.add_signal_receiver(on_event, "Event", IFACE, None, PATH)
+    loop = GLib.MainLoop()
+    GLib.timeout_add_seconds(seconds, loop.quit)
+    loop.run()
+    print(call(json.dumps({"op": "dragWatch", "table": None})), flush=True)
     return 0
 
 

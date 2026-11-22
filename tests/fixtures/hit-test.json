@@ -1,0 +1,731 @@
+{
+  "comment": "The hit-test contract (docs/mouse-positioning-spec.md MPOS-ARCH-2): every implementation runs these cases. TypeScript: app-native/shared/drag-snap/hit-test.test.ts; Rust: cli/crates/winctl/src/drag.rs (tests). A step is a pointer sample, a tick (a pause may be over) or the release; 'expect' is the transition ('none': the armed zone stays; null: disarmed) or, for a release, the zone of the drop. flags: shift 1, ctrl 2, alt 4, meta 8. stickPx: an armed zone holds a pointer that left its trigger by at most that much (and is in no other zone).",
+  "tables": {
+    "edge": {
+      "seq": 1,
+      "space": "native",
+      "armDelayMs": 0,
+      "sharedEdgeDelayMs": 400,
+      "modifier": "shift",
+      "zones": [
+        {
+          "id": "d0/top-left",
+          "display": "d0",
+          "area": "top-left",
+          "action": "top-left",
+          "triggers": [
+            {
+              "x": 0,
+              "y": 0,
+              "width": 96,
+              "height": 8
+            },
+            {
+              "x": 0,
+              "y": 0,
+              "width": 8,
+              "height": 96
+            }
+          ],
+          "when": "no-modifier",
+          "shared": false
+        },
+        {
+          "id": "d0/top",
+          "display": "d0",
+          "area": "top",
+          "action": "maximize",
+          "triggers": [
+            {
+              "x": 96,
+              "y": 0,
+              "width": 808,
+              "height": 8
+            }
+          ],
+          "when": "no-modifier",
+          "shared": false
+        },
+        {
+          "id": "d0/left",
+          "display": "d0",
+          "area": "left",
+          "action": "left-half",
+          "triggers": [
+            {
+              "x": 0,
+              "y": 96,
+              "width": 8,
+              "height": 608
+            }
+          ],
+          "when": "no-modifier",
+          "shared": false
+        },
+        {
+          "id": "d0/right/shared",
+          "display": "d0",
+          "area": "right",
+          "action": "right-half",
+          "triggers": [
+            {
+              "x": 992,
+              "y": 96,
+              "width": 8,
+              "height": 608
+            }
+          ],
+          "when": "no-modifier",
+          "shared": true
+        },
+        {
+          "id": "d0/band-left",
+          "display": "d0",
+          "area": "left",
+          "action": "left-half",
+          "triggers": [
+            {
+              "x": 64,
+              "y": 240,
+              "width": 176,
+              "height": 320
+            }
+          ],
+          "when": "modifier",
+          "shared": false
+        },
+        {
+          "id": "d1/left/shared",
+          "display": "d1",
+          "area": "left",
+          "action": "left-half",
+          "triggers": [
+            {
+              "x": 1000,
+              "y": 96,
+              "width": 8,
+              "height": 608
+            }
+          ],
+          "when": "no-modifier",
+          "shared": true
+        }
+      ],
+      "stickPx": 24
+    },
+    "delayed": {
+      "seq": 2,
+      "space": "native",
+      "armDelayMs": 150,
+      "sharedEdgeDelayMs": 400,
+      "modifier": null,
+      "zones": [
+        {
+          "id": "d0/left",
+          "display": "d0",
+          "area": "left",
+          "action": "left-half",
+          "triggers": [
+            {
+              "x": 0,
+              "y": 96,
+              "width": 8,
+              "height": 608
+            }
+          ],
+          "when": "plain",
+          "shared": false
+        },
+        {
+          "id": "d0/top",
+          "display": "d0",
+          "area": "top",
+          "action": "maximize",
+          "triggers": [
+            {
+              "x": 96,
+              "y": 0,
+              "width": 808,
+              "height": 8
+            }
+          ],
+          "when": "plain",
+          "shared": false
+        }
+      ],
+      "stickPx": 0
+    }
+  },
+  "cases": [
+    {
+      "name": "an outer edge arms at once and disarms on leaving",
+      "table": "edge",
+      "steps": [
+        {
+          "op": "sample",
+          "x": 500,
+          "y": 400,
+          "t": 0,
+          "flags": 0,
+          "expect": "none"
+        },
+        {
+          "op": "sample",
+          "x": 4,
+          "y": 400,
+          "t": 10,
+          "flags": 0,
+          "expect": "d0/left"
+        },
+        {
+          "op": "sample",
+          "x": 4,
+          "y": 300,
+          "t": 20,
+          "flags": 0,
+          "expect": "none"
+        },
+        {
+          "op": "sample",
+          "x": 50,
+          "y": 400,
+          "t": 30,
+          "flags": 0,
+          "expect": null
+        },
+        {
+          "op": "release",
+          "x": 50,
+          "y": 400,
+          "t": 40,
+          "flags": 0,
+          "expect": null
+        }
+      ]
+    },
+    {
+      "name": "sliding along the edge re-arms from zone to zone",
+      "table": "edge",
+      "steps": [
+        {
+          "op": "sample",
+          "x": 4,
+          "y": 400,
+          "t": 0,
+          "flags": 0,
+          "expect": "d0/left"
+        },
+        {
+          "op": "sample",
+          "x": 4,
+          "y": 50,
+          "t": 10,
+          "flags": 0,
+          "expect": "d0/top-left"
+        },
+        {
+          "op": "sample",
+          "x": 50,
+          "y": 4,
+          "t": 20,
+          "flags": 0,
+          "expect": "none"
+        },
+        {
+          "op": "sample",
+          "x": 200,
+          "y": 4,
+          "t": 30,
+          "flags": 0,
+          "expect": "d0/top"
+        },
+        {
+          "op": "release",
+          "x": 200,
+          "y": 4,
+          "t": 40,
+          "flags": 0,
+          "expect": "d0/top"
+        }
+      ]
+    },
+    {
+      "name": "a fast throw: the release lands in an outer zone no sample saw",
+      "table": "edge",
+      "steps": [
+        {
+          "op": "sample",
+          "x": 500,
+          "y": 400,
+          "t": 0,
+          "flags": 0,
+          "expect": "none"
+        },
+        {
+          "op": "release",
+          "x": 3,
+          "y": 400,
+          "t": 50,
+          "flags": 0,
+          "expect": "d0/left"
+        }
+      ]
+    },
+    {
+      "name": "a shared edge arms after its pause, also with the pointer at rest",
+      "table": "edge",
+      "steps": [
+        {
+          "op": "sample",
+          "x": 996,
+          "y": 400,
+          "t": 0,
+          "flags": 0,
+          "expect": "none"
+        },
+        {
+          "op": "sample",
+          "x": 997,
+          "y": 400,
+          "t": 200,
+          "flags": 0,
+          "expect": "none"
+        },
+        {
+          "op": "tick",
+          "t": 399,
+          "expect": "none"
+        },
+        {
+          "op": "tick",
+          "t": 400,
+          "expect": "d0/right/shared"
+        },
+        {
+          "op": "release",
+          "x": 997,
+          "y": 400,
+          "t": 450,
+          "flags": 0,
+          "expect": "d0/right/shared"
+        }
+      ]
+    },
+    {
+      "name": "crossing a shared edge quickly drops nothing",
+      "table": "edge",
+      "steps": [
+        {
+          "op": "sample",
+          "x": 996,
+          "y": 400,
+          "t": 0,
+          "flags": 0,
+          "expect": "none"
+        },
+        {
+          "op": "sample",
+          "x": 1004,
+          "y": 400,
+          "t": 30,
+          "flags": 0,
+          "expect": "none"
+        },
+        {
+          "op": "release",
+          "x": 1004,
+          "y": 400,
+          "t": 100,
+          "flags": 0,
+          "expect": null
+        }
+      ]
+    },
+    {
+      "name": "a shared edge whose pause ran out at the release counts",
+      "table": "edge",
+      "steps": [
+        {
+          "op": "sample",
+          "x": 996,
+          "y": 400,
+          "t": 0,
+          "flags": 0,
+          "expect": "none"
+        },
+        {
+          "op": "release",
+          "x": 996,
+          "y": 400,
+          "t": 450,
+          "flags": 0,
+          "expect": "d0/right/shared"
+        }
+      ]
+    },
+    {
+      "name": "the modifier pressed on a plain drag hides the zones for the rest of the drag",
+      "table": "edge",
+      "steps": [
+        {
+          "op": "sample",
+          "x": 4,
+          "y": 400,
+          "t": 0,
+          "flags": 0,
+          "expect": "d0/left"
+        },
+        {
+          "op": "sample",
+          "x": 4,
+          "y": 400,
+          "t": 10,
+          "flags": 1,
+          "expect": null
+        },
+        {
+          "op": "sample",
+          "x": 4,
+          "y": 400,
+          "t": 20,
+          "flags": 0,
+          "expect": "none"
+        },
+        {
+          "op": "release",
+          "x": 4,
+          "y": 400,
+          "t": 30,
+          "flags": 0,
+          "expect": null
+        }
+      ]
+    },
+    {
+      "name": "the band needs the modifier, also at the release",
+      "table": "edge",
+      "steps": [
+        {
+          "op": "sample",
+          "x": 100,
+          "y": 400,
+          "t": 0,
+          "flags": 0,
+          "expect": "none"
+        },
+        {
+          "op": "sample",
+          "x": 100,
+          "y": 400,
+          "t": 10,
+          "flags": 1,
+          "expect": "d0/band-left"
+        },
+        {
+          "op": "release",
+          "x": 100,
+          "y": 400,
+          "t": 20,
+          "flags": 0,
+          "expect": null
+        }
+      ]
+    },
+    {
+      "name": "a drop in the band with the modifier held",
+      "table": "edge",
+      "steps": [
+        {
+          "op": "sample",
+          "x": 100,
+          "y": 400,
+          "t": 0,
+          "flags": 1,
+          "expect": "d0/band-left"
+        },
+        {
+          "op": "sample",
+          "x": 120,
+          "y": 420,
+          "t": 10,
+          "flags": 1,
+          "expect": "none"
+        },
+        {
+          "op": "release",
+          "x": 120,
+          "y": 420,
+          "t": 20,
+          "flags": 1,
+          "expect": "d0/band-left"
+        }
+      ]
+    },
+    {
+      "name": "other modifier keys do not count as the modifier",
+      "table": "edge",
+      "steps": [
+        {
+          "op": "sample",
+          "x": 100,
+          "y": 400,
+          "t": 0,
+          "flags": 8,
+          "expect": "none"
+        },
+        {
+          "op": "sample",
+          "x": 4,
+          "y": 400,
+          "t": 10,
+          "flags": 8,
+          "expect": "d0/left"
+        }
+      ]
+    },
+    {
+      "name": "the maximum edge is outside a trigger (half-open rectangles)",
+      "table": "edge",
+      "steps": [
+        {
+          "op": "sample",
+          "x": 8,
+          "y": 400,
+          "t": 0,
+          "flags": 0,
+          "expect": "none"
+        },
+        {
+          "op": "sample",
+          "x": 7.5,
+          "y": 400,
+          "t": 10,
+          "flags": 0,
+          "expect": "d0/left"
+        }
+      ]
+    },
+    {
+      "name": "armDelayMs: an outer edge waits too, a release there still counts",
+      "table": "delayed",
+      "steps": [
+        {
+          "op": "sample",
+          "x": 4,
+          "y": 400,
+          "t": 0,
+          "flags": 0,
+          "expect": "none"
+        },
+        {
+          "op": "tick",
+          "t": 149,
+          "expect": "none"
+        },
+        {
+          "op": "tick",
+          "t": 150,
+          "expect": "d0/left"
+        },
+        {
+          "op": "sample",
+          "x": 4,
+          "y": 4,
+          "t": 160,
+          "flags": 0,
+          "expect": null
+        },
+        {
+          "op": "release",
+          "x": 200,
+          "y": 4,
+          "t": 170,
+          "flags": 0,
+          "expect": "d0/top"
+        }
+      ]
+    },
+    {
+      "name": "no modifier on the platform: the flags change nothing",
+      "table": "delayed",
+      "steps": [
+        {
+          "op": "sample",
+          "x": 200,
+          "y": 4,
+          "t": 0,
+          "flags": 1,
+          "expect": "none"
+        },
+        {
+          "op": "tick",
+          "t": 150,
+          "expect": "d0/top"
+        },
+        {
+          "op": "release",
+          "x": 200,
+          "y": 4,
+          "t": 160,
+          "flags": 1,
+          "expect": "d0/top"
+        }
+      ]
+    },
+    {
+      "name": "an armed zone holds the pointer within stickPx, also at the release",
+      "table": "edge",
+      "steps": [
+        {
+          "op": "sample",
+          "x": 4,
+          "y": 400,
+          "t": 0,
+          "flags": 0,
+          "expect": "d0/left"
+        },
+        {
+          "op": "sample",
+          "x": 20,
+          "y": 400,
+          "t": 10,
+          "flags": 0,
+          "expect": "none"
+        },
+        {
+          "op": "sample",
+          "x": 31,
+          "y": 400,
+          "t": 20,
+          "flags": 0,
+          "expect": "none"
+        },
+        {
+          "op": "release",
+          "x": 31,
+          "y": 400,
+          "t": 30,
+          "flags": 0,
+          "expect": "d0/left"
+        }
+      ]
+    },
+    {
+      "name": "beyond stickPx the zone lets go",
+      "table": "edge",
+      "steps": [
+        {
+          "op": "sample",
+          "x": 4,
+          "y": 400,
+          "t": 0,
+          "flags": 0,
+          "expect": "d0/left"
+        },
+        {
+          "op": "sample",
+          "x": 33,
+          "y": 400,
+          "t": 10,
+          "flags": 0,
+          "expect": null
+        },
+        {
+          "op": "release",
+          "x": 33,
+          "y": 400,
+          "t": 20,
+          "flags": 0,
+          "expect": null
+        }
+      ]
+    },
+    {
+      "name": "another zone wins over the sticking one",
+      "table": "edge",
+      "steps": [
+        {
+          "op": "sample",
+          "x": 200,
+          "y": 4,
+          "t": 0,
+          "flags": 0,
+          "expect": "d0/top"
+        },
+        {
+          "op": "sample",
+          "x": 200,
+          "y": 20,
+          "t": 10,
+          "flags": 0,
+          "expect": "none"
+        },
+        {
+          "op": "sample",
+          "x": 4,
+          "y": 20,
+          "t": 20,
+          "flags": 0,
+          "expect": "d0/top-left"
+        }
+      ]
+    },
+    {
+      "name": "sticking never outlives the modifier rule",
+      "table": "edge",
+      "steps": [
+        {
+          "op": "sample",
+          "x": 100,
+          "y": 400,
+          "t": 0,
+          "flags": 1,
+          "expect": "d0/band-left"
+        },
+        {
+          "op": "sample",
+          "x": 250,
+          "y": 400,
+          "t": 10,
+          "flags": 1,
+          "expect": "none"
+        },
+        {
+          "op": "sample",
+          "x": 250,
+          "y": 400,
+          "t": 20,
+          "flags": 0,
+          "expect": null
+        }
+      ]
+    },
+    {
+      "name": "no stickPx: the edge strip lets go at once",
+      "table": "delayed",
+      "steps": [
+        {
+          "op": "sample",
+          "x": 4,
+          "y": 400,
+          "t": 0,
+          "flags": 0,
+          "expect": "none"
+        },
+        {
+          "op": "tick",
+          "t": 150,
+          "expect": "d0/left"
+        },
+        {
+          "op": "sample",
+          "x": 10,
+          "y": 400,
+          "t": 160,
+          "flags": 0,
+          "expect": null
+        }
+      ]
+    }
+  ]
+}

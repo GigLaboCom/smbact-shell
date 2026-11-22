@@ -6,6 +6,8 @@
 // - activation uses the server's current time (time 0 may not get the focus);
 // - global hotkeys are Mutter accelerator grabs owned by the current client: released when it goes away;
 // - window snapshots cost a frame each: cached, retaken only when stale, one per idle turn (snapshots.js);
+// - window drags are reported against the client's zone table only while it set one (dragSource.js); Mutter's own
+//   edge tiling is held off only while the client asks, and given back when the client goes away (nativeTiling);
 // - no synchronous work beyond one frame, every request in try/catch, everything undone in disable(): a hang
 //   freezes the desktop and a crash ends the session.
 import GdkPixbuf from 'gi://GdkPixbuf';
@@ -19,6 +21,7 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as Config from 'resource:///org/gnome/shell/misc/config.js';
 import {Snapshots} from './snapshots.js';
+import {DragSource} from './dragSource.js';
 
 const API = 1;
 const BUS_NAME = 'com.giglabo.SMBAct.Shell';
@@ -31,6 +34,13 @@ const EVENT_COALESCE_MS = 100;
  * login screen or behind a system dialog.
  */
 const HOTKEY_ACTION_MODE = Shell.ActionMode.NORMAL | Shell.ActionMode.OVERVIEW;
+/**
+ * Extensions that hold `org.gnome.mutter edge-tiling` off themselves and tile on their own: the key must not be
+ * written while one of them is active (the write would end up in their own restore record).
+ */
+const TILING_EXTENSIONS = ['tiling-assistant@ubuntu.com', 'tiling-assistant@leleat-on-github', 'tilingshell@ferrarodomenico.com'];
+/** ExtensionState.ACTIVE (1 in GNOME Shell 46-51). */
+const EXTENSION_ACTIVE = 1;
 
 const IFACE_XML = `
 <node>
@@ -151,6 +161,12 @@ class Service {
     this._grabActions = new Map();
     this._snapshots = null;
     this._focus = null;
+    /** Window drags against the client's zone table (dragSource.js); created at the first dragWatch. */
+    this._drag = null;
+    /** org.gnome.mutter, created at the first nativeTiling; `_tilingHold`: what was there before the hold. */
+    this._mutterSettings = null;
+    this._tilingHold = null;
+    this._tilingChangedId = 0;
     this._ops = {
       hello: () => this._hello(),
       listWindows: req => this._listWindows(req),
@@ -186,6 +202,26 @@ class Service {
           throw new ShellError('NO_SNAPSHOT', `no snapshot of window ${req.id} yet`);
         return {snapshot};
       },
+      dragWatch: req => {
+        if (req.table !== null && typeof req.table !== 'object')
+          throw badRequest('"table" must be a zone table or null');
+        if (req.table === null && !this._drag)
+          return {watching: false, reason: 'stopped'};
+        this._drag ??= new DragSource(event => this._emit({type: 'drag', event}), (level, message) => this._log(level, message));
+        try {
+          return this._drag.watch(req.table);
+        } catch (e) {
+          throw badRequest(e.message);
+        }
+      },
+      dragAnswer: req => {
+        if (typeof req.allow !== 'boolean')
+          throw badRequest('"allow" must be true or false');
+        return this._drag?.answer(this._number(req, 'drag'), req.allow) ?? {ok: false};
+      },
+      dragRestoreSize: req =>
+        this._drag?.restoreSize(this._number(req, 'drag'), this._number(req, 'width'), this._number(req, 'height')) ?? {ok: false},
+      nativeTiling: req => this._nativeTiling(req),
     };
   }
 
@@ -195,13 +231,13 @@ class Service {
     this._nameId = Gio.bus_own_name_on_connection(Gio.DBus.session, BUS_NAME, Gio.BusNameOwnerFlags.NONE, null, null);
     this._watchId = Gio.bus_watch_name_on_connection(Gio.DBus.session, CLIENT_NAME, Gio.BusNameWatcherFlags.NONE,
       (_c, _name, owner) => {
-        // grabs belong to the client that made them: a new owner starts without any
+        // grabs, the drag watch and the tiling hold belong to the client that made them: a new owner starts without
         if (this._clientOwner !== owner)
-          this._releaseGrabs();
+          this._releaseClientState();
         this._clientOwner = owner;
       },
       () => {
-        this._releaseGrabs();
+        this._releaseClientState();
         this._clientOwner = null;
       });
     const d = global.display;
@@ -226,7 +262,9 @@ class Service {
   }
 
   stop() {
-    this._releaseGrabs();
+    this._releaseClientState();
+    this._drag = null;
+    this._mutterSettings = null;
     this._snapshots?.stop();
     this._snapshots = null;
     this._focus = null;
@@ -385,6 +423,87 @@ class Service {
   _releaseGrabs() {
     for (const [accelerator, action] of [...this._grabs])
       this._ungrab(accelerator, action);
+  }
+
+  /** The client went away or changed (or the extension stops): its grabs, its drag watch and its tiling hold end. */
+  _releaseClientState() {
+    this._releaseGrabs();
+    tryOr(() => this._drag?.stop());
+    tryOr(() => this._releaseTiling());
+  }
+
+  _log(level, message) {
+    if (level === 'warn')
+      console.warn(`smbact@giglabo.com: ${message}`);
+  }
+
+  // ---- Mutter's own edge tiling (nativeTiling): held off while the client asks, given back when it goes away
+
+  _nativeTiling(req) {
+    if (req.suppress !== undefined && typeof req.suppress !== 'boolean')
+      throw badRequest('"suppress" must be true or false, or absent to read');
+    this._mutterSettings ??= new Gio.Settings({schema_id: 'org.gnome.mutter'});
+    const s = this._mutterSettings;
+    if (req.suppress === true) {
+      const holder = this._activeTilingExtension();
+      if (holder)
+        throw new ShellError('TILING_EXTENSION_ACTIVE', `${holder} is active and holds edge-tiling itself`);
+      if (!this._tilingHold) {
+        // the user's own value (none: the default holds), so the key goes back exactly as it was
+        const user = s.get_user_value('edge-tiling');
+        this._tilingHold = user === null ? {present: false} : {present: true, value: user.get_boolean()};
+        this._tilingChangedId = s.connect('changed::edge-tiling', () => tryOr(() => this._tilingChanged()));
+      }
+      if (s.get_boolean('edge-tiling'))
+        s.set_boolean('edge-tiling', false);
+    } else if (req.suppress === false) {
+      this._releaseTiling();
+    }
+    return this._tilingState();
+  }
+
+  _tilingState() {
+    const s = this._mutterSettings;
+    const user = s.get_user_value('edge-tiling');
+    return {
+      edgeTiling: s.get_boolean('edge-tiling'),
+      user: user === null ? null : user.get_boolean(),
+      held: this._tilingHold !== null,
+      ...(this._tilingHold ? {saved: {...this._tilingHold}} : {}),
+      tilingExtension: this._activeTilingExtension(),
+    };
+  }
+
+  /** Somebody else switched edge tiling back on during the hold: no fight over it, the hold ends without a write. */
+  _tilingChanged() {
+    if (this._tilingHold && this._mutterSettings.get_boolean('edge-tiling'))
+      this._dropTilingHold();
+  }
+
+  _dropTilingHold() {
+    if (this._tilingChangedId) {
+      tryOr(() => this._mutterSettings?.disconnect(this._tilingChangedId));
+      this._tilingChangedId = 0;
+    }
+    const hold = this._tilingHold;
+    this._tilingHold = null;
+    return hold;
+  }
+
+  /** Puts back what the hold found: only over its own `false`, never while a tiling extension holds the key itself. */
+  _releaseTiling() {
+    const hold = this._dropTilingHold();
+    const s = this._mutterSettings;
+    if (!hold || !s || s.get_boolean('edge-tiling') || this._activeTilingExtension())
+      return;
+    if (hold.present)
+      s.set_boolean('edge-tiling', hold.value);
+    else
+      s.reset('edge-tiling');
+  }
+
+  _activeTilingExtension() {
+    return TILING_EXTENSIONS.find(uuid => tryOr(() => Main.extensionManager.lookup(uuid)?.state) === EXTENSION_ACTIVE) ?? null;
   }
 
   // ---- operations

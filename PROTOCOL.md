@@ -34,8 +34,9 @@ is not running; GNOME's own allow-lists have the same limit.
 ```
 
 Error codes: `BAD_REQUEST` (not JSON, missing or wrong arguments), `UNKNOWN_OP`, `NO_WINDOW`, `GRAB_FAILED`
-(`grabAccelerator`: the shell refused the accelerator), `NO_SNAPSHOT` (`snapshot`: none taken yet), `FAILED` (the
-shell threw; `message` has its text).
+(`grabAccelerator`: the shell refused the accelerator), `NO_SNAPSHOT` (`snapshot`: none taken yet),
+`TILING_EXTENSION_ACTIVE` (`nativeTiling`: a tiling extension holds the key itself), `FAILED` (the shell threw;
+`message` has its text).
 
 Unknown fields in a request are ignored; new optional fields and new operations do not change the API number. A
 change that breaks an existing operation does, and `hello` reports which API the plugin speaks.
@@ -120,6 +121,13 @@ XWayland. Rectangles are `{ "x", "y", "width", "height" }`.
 | `ungrabAccelerator` | `accelerator` (as grabbed) | `{ released }` |
 | `snapshots` | `ids`, `maxSize?` (px, default 480, at most 1024), `background?` (`#rrggbb`, default white) | `{ snapshots: Snapshot[] }` (the cached ones) |
 | `snapshot` | `id` | `{ snapshot }` |
+| `dragWatch` | `table` (a zone table, or `null` to stop) | `{ watching, reason?, draws, restoreDuringMove }` |
+| `dragAnswer` | `drag`, `allow` | `{ ok }` (`false`: no such drag running) |
+| `dragRestoreSize` | `drag`, `width`, `height` | `{ ok }` (`false`: no such drag, or the window is maximized) |
+| `nativeTiling` | `suppress?` (`true` hold off, `false` give back, absent: read) | `{ edgeTiling, user, held, saved?, tilingExtension }` |
+
+The last four are the GNOME Shell extension's only (plugin 2.2.0 and later); see "Window drags" and "Mutter's edge
+tiling" below.
 
 - `setState` states: `minimized`, `maximized`, `maximizedHorizontally`, `maximizedVertically`, `fullscreen`,
   `above`.
@@ -155,6 +163,79 @@ XWayland. Rectangles are `{ "x", "y", "width", "height" }`.
 - `showDesktop` with `show: true` minimizes the visible windows of the active workspace and remembers them; `false`
   restores those.
 
+## Window drags (GNOME, plugin 2.2.0)
+
+SMBAct places a window the user drags to a screen edge or corner (its "positioning with the mouse"). The extension is
+its drag source on GNOME: it reports when a window is dragged and which zone of SMBAct's table the pointer is in, and
+nothing else. It draws nothing (SMBAct draws its zone map and the footprint itself, `draws: false`) and moves no window
+at the end of a drag (SMBAct's own action does, through `moveResize` / `setState`).
+
+`dragWatch` gives the table; drags are reported only while one is set:
+
+```json
+{ "seq": 3, "space": "logical", "armDelayMs": 0, "sharedEdgeDelayMs": 400, "stickPx": 24, "modifier": "shift",
+  "zones": [ { "id": "d0/left", "display": "d0", "area": "left", "action": "left-half",
+               "triggers": [ { "x": 0, "y": 96, "width": 30, "height": 888 } ], "when": "no-modifier", "shared": false } ] }
+```
+
+- `triggers` are half-open rectangles in the compositor's coordinates; a zone with two (an L-shaped corner) counts in
+  either. `when`: `plain` (any drag), `modifier` (only while the modifier is held), `no-modifier` (until the modifier
+  is pressed once during the drag). `shared` zones (on an edge between two monitors) arm after `sharedEdgeDelayMs`,
+  the others after `armDelayMs`; moving on to a neighbouring zone while one is armed re-arms at once. An armed zone
+  holds the pointer up to `stickPx` outside its triggers. The rules are SMBAct's hit-test; `hitTest.js` is a port of it
+  and runs SMBAct's fixtures (`tests/`).
+- A drag is a pointer move of a normal, movable, resizable window that is not fullscreen, with the primary button:
+  `grab-op-begin` with `(op & ~UNCONSTRAINED) === MOVING` (the title bar, a client-side drag, the top bar, Super+drag).
+  Keyboard moves, resizes and touch drags are not reported. One drag at a time.
+- The pointer and the modifiers are sampled every 16 ms during the drag (`global.get_pointer()`); the modifier bits
+  are shift 1, ctrl 2, alt 4, super 8.
+
+Events: `{ "type": "drag", "event": <event> }`, where `<event>` is one of
+
+```json
+{ "type": "begin", "drag": 7, "window": { "OwnerHandle": 3306, "Handle": 3209482314 }, "frame": { "x": 900, "y": 300, "width": 640, "height": 467 },
+  "pointer": { "x": 1220, "y": 318 }, "press": { "x": 1220, "y": 318 }, "table": 3, "time": 81234.5, "owner": "gedit" }
+{ "type": "zone", "drag": 7, "zone": "d0/left", "pointer": { "x": 8, "y": 500 } }
+{ "type": "end", "drag": 7, "zone": "d0/left", "cancelled": false, "frame": { "x": -312, "y": 482, "width": 640, "height": 467 }, "pointer": { "x": 8, "y": 500 } }
+{ "type": "end", "drag": 7, "zone": null, "cancelled": true, "reason": "escape", "frame": { "x": 900, "y": 300, "width": 640, "height": 467 }, "pointer": { "x": 8, "y": 500 } }
+```
+
+- `window`: `Handle` is the window's `id` (as in `Window`), `OwnerHandle` its pid; `frame` is the frame at the begin;
+  `table` the `seq` hit against; `time` the shell's monotonic clock in ms.
+- `zone` reports transitions only (armed, re-armed, disarmed with `null`), never the pointer stream.
+- `end`: `zone` is the zone of the drop (the armed one, or a fast throw into a zone that arms at once), `null` for
+  none. `cancelled` when the grab ended with the button still down (Escape) or with the window back where it began
+  (Mutter puts it back on Escape); then `reason` is `escape` or `put-back`. A drag also ends cancelled when its window
+  goes away (`window-closed`), the monitors change (`displays-changed`), the workspace changes without the window
+  (`workspace-changed`), a zone would arm while the overview is open (`overview`) or over a monitor showing a
+  fullscreen window (`fullscreen`), or the watch stops (`stopped`); `frame` is `null` then.
+
+`dragAnswer` is SMBAct's answer to `begin` (may this window be placed); `allow: false` keeps the window as it is.
+`dragRestoreSize` gives the dragged window a size back: once the pointer is 12 px off the press, the window gets
+`width` x `height` during the move, with the pointer at the same share of its width and at the same height in it where
+it grabbed it; once per drag. A window maximized both ways is Mutter's to restore (`{ ok: false }`); a one-axis
+maximize (how SMBAct holds a full-height half) is left first.
+
+## Mutter's edge tiling (GNOME, plugin 2.2.0)
+
+`nativeTiling` holds `org.gnome.mutter edge-tiling` off for the client and gives it back:
+
+- `suppress: true` saves the user's own value (or that there was none), writes `false` and holds it; repeated calls
+  keep the first saved value. It is refused with `TILING_EXTENSION_ACTIVE` while an extension that holds the key
+  itself is active (Ubuntu's Tiling Assistant, `tiling-assistant@ubuntu.com` / `@leleat-on-github`, Tiling Shell): the
+  write would end up in that extension's own restore record.
+- `suppress: false` puts the saved value back (resets the key when there was none), only over its own `false` and
+  never while such an extension is active.
+- When somebody else switches the key on during the hold (Settings, another extension being disabled), the hold ends
+  without a write: no fight over it.
+- The hold belongs to the client, like grabs: it is given back when the owner of `com.giglabo.SMBAct` goes away or
+  changes, and when the extension is disabled (a screen lock). A client that starts again holds again.
+- The reply: `edgeTiling` the effective value, `user` the user's own (`null`: none), `held`, `saved` while held,
+  `tilingExtension` the uuid of an active extension that holds the key, or `null`.
+
+The drag watch belongs to the client too: it stops when the client goes away or changes, and when the extension is
+disabled.
+
 ## Events
 
 `Event` carries `{ "type": ..., ... }`:
@@ -164,6 +245,7 @@ XWayland. Rectangles are `{ "x", "y", "width", "height" }`.
 - `accelerator` with `accelerator` (the string given to `grabAccelerator`) and `time` (the key press's timestamp,
   usable as `activate`'s `time`).
 - `snapshot` with `id`: a snapshot asked for with `snapshots` is ready.
+- `drag` with `event`: a window drag against the client's zone table (see "Window drags").
 
 ## History
 
@@ -174,6 +256,8 @@ XWayland. Rectangles are `{ "x", "y", "width", "height" }`.
 - API 1, plugin 2.0.0 (2026-11): the first full release, with SMBAct 2.0.0; the same API as 1.0.0-alpha.3.
 - API 1, plugin 2.1.0 (2026-11): `connector` in `displays`, `onActiveWorkspace` and (KWin) `tiled` in the window
   (new optional fields, same API), with SMBAct 2.1.0.
+- API 1, plugin 2.2.0 (not released yet): `dragWatch`, `dragAnswer`, `dragRestoreSize`, `nativeTiling`, the `drag`
+  event (GNOME only; new operations, same API; clients look for them in `hello`'s `ops`).
 
 ## KWin transport
 
@@ -197,7 +281,8 @@ What the KWin script does not have: `snapshots` / `snapshot` (KWin offers window
 SMBAct's own X11 hotkeys fire with any focus: KWin passes key combinations to XWayland apps), `iconPng` (a window's
 icon is a QIcon: the script reports `desktopFile` and SMBAct looks the icon up), and the X11 marks (`client`,
 `x11Window` are `null`: KWin's scripting API does not tell X11 from Wayland windows; SMBAct matches them against the X
-server's own list). Window ids are the first 32 bits of KWin's UUID for the window (stable across reloads).
+server's own list). Window ids are the first 32 bits of KWin's UUID for the window (stable across reloads). The
+window drags and `nativeTiling` (plugin 2.2.0) are the GNOME Shell extension's only so far.
 
 - API 1, plugin 1.0.0-alpha.3 (2026-11): the KWin script (`kwin/smbact-kwin.js`).
 
