@@ -7,13 +7,22 @@
 // request and its reply (the transport pairs them by it).
 // A thin executor, like the extension: no decisions, nothing on its own. When SMBAct goes away its calls fail and
 // the loop ends; SMBAct unloads and loads the script again when it starts.
+// Window drags (plugin 2.2.0, PROTOCOL.md "Window drags"): reported against SMBAct's zone table only while it set one
+// (dragWatch); KWin's own screen-edge tiling is held off in memory only while SMBAct asks (nativeTiling) and given back
+// when SMBAct asks, or by itself when SMBAct's name leaves the bus (a watchdog: a script's failed call has no callback).
 const SERVICE = "com.giglabo.SMBAct";
 const PATH = "/com/giglabo/SMBAct/KWin1";
 const IFACE = "com.giglabo.SMBAct.KWin1";
 const API = 1;
-const VERSION = "2.1.0";
+const VERSION = "2.2.0";
 /** At most one windowsChanged event this often (a drag moves a window every frame); the end of a drag sends one too. */
 const EVENT_MIN_INTERVAL_MS = 100;
+/** The pointer must move this far from the start of a drag before a placed window gets its size back (MPOS-REST-1). */
+const DRAG_RESTORE_THRESHOLD = 12;
+/** How often the script checks that SMBAct is still on the bus while it holds something for it (watchdog). */
+const WATCHDOG_MS = 2000;
+/** KWin's options SMBAct may hold off (nativeTiling): the screen-edge tiling and maximize of a dragged window. */
+const TILING_OPTIONS = ["electricBorderTiling", "electricBorderMaximize"];
 
 class ShellError extends Error {
   constructor(code, message) {
@@ -213,6 +222,475 @@ function displays() {
   return { monitors: monitors };
 }
 
+// ---- the drag hit-test: pointer samples in, zone transitions out (PROTOCOL.md "Window drags"). A port of SMBAct's
+// reference (app-native/shared/drag-snap/hit-test.ts), the same as the GNOME extension's hitTest.js; every
+// implementation runs the same fixtures (tests/fixtures/hit-test.json). Pure: no KWin objects, no clock of its own.
+// Written without `?.`, `??` and object spread, as the rest of this file. tests/kwin.test.mjs runs it.
+
+/** The modifier bits a sample carries (`flags`): the same numbers as SMBAct's MODIFIER_FLAG (always 0 from KWin). */
+const MODIFIER_FLAG = { shift: 1, ctrl: 2, alt: 4, meta: 8 };
+
+function zoneContains(z, x, y) {
+  return z.triggers.some((r) => x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height);
+}
+
+/** How far the point is from the zone's nearest trigger (0 inside). */
+function zoneDistance(z, x, y) {
+  return z.triggers.reduce((best, r) => {
+    const dx = Math.max(r.x - x, 0, x - (r.x + r.width));
+    const dy = Math.max(r.y - y, 0, y - (r.y + r.height));
+    return Math.min(best, Math.hypot(dx, dy));
+  }, Infinity);
+}
+
+class DragHitTest {
+  /** @param {object} table the zone table (`dragWatch`'s `table`) */
+  constructor(table) {
+    this._table = table;
+    this._armed = null;
+    /** a zone waiting for its pause (a shared edge, or armDelayMs): {zone, since} */
+    this._pending = null;
+    /** the modifier was pressed during this drag: `no-modifier` zones are off for the rest of it */
+    this._latched = false;
+    this._last = null;
+  }
+
+  get armedZone() {
+    return this._armed;
+  }
+
+  _held(flags) {
+    const m = this._table.modifier;
+    return !!m && (flags & MODIFIER_FLAG[m]) !== 0;
+  }
+
+  /** The zone counts with these modifier flags. */
+  _allowed(z, flags) {
+    const held = this._held(flags);
+    if (z.when === "modifier") return held;
+    if (z.when === "no-modifier") return !held && !this._latched;
+    return true;
+  }
+
+  /** The zone the pointer is in, as far as the modifier allows. */
+  zoneAt(x, y, flags) {
+    return this._table.zones.find((z) => this._allowed(z, flags) && zoneContains(z, x, y));
+  }
+
+  /** The armed zone still holds a pointer that left its trigger by at most `stickPx` (and is in no other zone). */
+  _sticks(s) {
+    const stick = this._table.stickPx || 0;
+    const armed = this._armed;
+    const z = armed ? this._table.zones.find((x) => x.id === armed) : undefined;
+    return z && stick > 0 && this._allowed(z, s.flags) && zoneDistance(z, s.x, s.y) <= stick ? z : undefined;
+  }
+
+  _delayOf(z) {
+    // moving on to a neighbouring zone while armed re-arms at once
+    if (this._armed) return 0;
+    return z.shared ? this._table.sharedEdgeDelayMs : this._table.armDelayMs;
+  }
+
+  /** A pointer sample `{x, y, t, flags}`. Returns `{zone}` on a transition, null when the armed zone stays. */
+  sample(s) {
+    this._last = s;
+    if (this._held(s.flags)) this._latched = true;
+    return this._evaluate(s);
+  }
+
+  /** Re-evaluates the last sample at time `t` (a pending pause may be over). */
+  tick(t) {
+    return this._last ? this._evaluate({ x: this._last.x, y: this._last.y, t: t, flags: this._last.flags }) : null;
+  }
+
+  /** When tick() should run next, or null when nothing waits. */
+  nextDeadline() {
+    if (!this._pending) return null;
+    return this._pending.since + (this._pending.zone.shared ? this._table.sharedEdgeDelayMs : this._table.armDelayMs);
+  }
+
+  _evaluate(s) {
+    const z = this.zoneAt(s.x, s.y, s.flags);
+    if (!z && this._sticks(s)) {
+      this._pending = null;
+      return null;
+    }
+    if (!z) {
+      this._pending = null;
+      if (this._armed !== null) {
+        this._armed = null;
+        return { zone: null };
+      }
+      return null;
+    }
+    if (z.id === this._armed) {
+      this._pending = null;
+      return null;
+    }
+    const delay = this._delayOf(z);
+    if (delay <= 0) {
+      this._pending = null;
+      this._armed = z.id;
+      return { zone: z.id };
+    }
+    if (!this._pending || this._pending.zone.id !== z.id) {
+      this._pending = { zone: z, since: s.t };
+      return null;
+    }
+    if (s.t - this._pending.since >= delay) {
+      this._pending = null;
+      this._armed = z.id;
+      return { zone: z.id };
+    }
+    return null;
+  }
+
+  /**
+   * The button went up at `s`: the zone of the drop, or null. The armed zone if the release is still in it; a fast
+   * throw into a zone that arms without a pause counts too; a zone that needs the modifier needs it held at the
+   * release; a shared edge never counts unarmed (no drop on the way across).
+   */
+  release(s) {
+    if (this._held(s.flags)) this._latched = true;
+    const z = this.zoneAt(s.x, s.y, s.flags);
+    if (!z) {
+      const stuck = this._sticks(s);
+      return stuck ? stuck.id : null;
+    }
+    if (z.id === this._armed || !z.shared || this._armed !== null) return z.id;
+    // a shared edge whose pause ran out between the last sample and the release
+    return this._pending && this._pending.zone.id === z.id && s.t - this._pending.since >= this._table.sharedEdgeDelayMs ? z.id : null;
+  }
+}
+
+// ---- window drags (dragWatch): KWin's interactive move of a window, the pointer from workspace.cursorPos
+// - A drag is interactiveMoveResizeStarted with `move` (the same signal starts resizes) of a normal, movable, resizable
+//   window that is not fullscreen. A move started from the keyboard (the window menu's Move, a shortcut) is not one:
+//   KWin puts the pointer on the window's centre for it, which a title-bar drag past KWin's threshold never is.
+// - KWin tells a script nothing about buttons or modifiers: the table may hold only `plain` zones (`modifier: false`).
+//   Shift during a drag drops the window into KWin's custom tile under the pointer, whatever its options say.
+// - interactiveMoveResizeFinished comes after KWin applied its own result: a cancel (Escape) has put the window back
+//   where it began (`end` cancelled, reason `escape`); a KWin tile or maximize (Shift's custom tile, KWin's own edge
+//   tiling) ends the drag with no zone (reason `tiled` / `maximized`).
+// - A placed window's size comes back during the move when SMBAct asks (dragRestoreSize): a frameGeometry write, which
+//   KWin keeps for the rest of the move with the pointer at the same share of the window where it grabbed it.
+
+let dragTable = null;
+let dragSession = null;
+let nextDragId = 0;
+
+function validTable(t) {
+  return (
+    !!t &&
+    typeof t === "object" &&
+    Array.isArray(t.zones) &&
+    typeof t.seq === "number" &&
+    t.zones.every((z) => z && typeof z.id === "string" && Array.isArray(z.triggers))
+  );
+}
+
+function point(p) {
+  return { x: Math.round(p.x), y: Math.round(p.y) };
+}
+
+function sameRect(a, b) {
+  return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+}
+
+function dragEligible(w) {
+  return !!w && !!w.move && !!w.normalWindow && w.moveable !== false && w.resizeable !== false && !w.fullScreen && !w.minimized;
+}
+
+function onCurrentDesktop(w) {
+  return !!w.onAllDesktops || (w.desktops || []).indexOf(workspace.currentDesktop) >= 0;
+}
+
+function dragWatch(req) {
+  if (req.table === null) {
+    dragCancel("stopped");
+    dragTable = null;
+    watchdogUpdate();
+    return { watching: false, reason: "stopped" };
+  }
+  if (!validTable(req.table)) throw badRequest('"table" must be a zone table ({seq, zones: [{id, triggers}], ...}) or null');
+  dragTable = req.table;
+  watchdogUpdate();
+  return { watching: true, draws: false, restoreDuringMove: true, modifier: false };
+}
+
+function dragAnswer(req) {
+  if (typeof req.allow !== "boolean") throw badRequest('"allow" must be true or false');
+  const s = dragSession;
+  if (!s || s.drag !== number(req, "drag")) return { ok: false };
+  s.allowed = req.allow;
+  return { ok: true };
+}
+
+function dragRestoreSize(req) {
+  const drag = number(req, "drag");
+  const width = number(req, "width");
+  const height = number(req, "height");
+  const s = dragSession;
+  if (!s || s.drag !== drag || !s.hit || s.maximizedAtBegin || s.tiledAtBegin || !(width > 0 && height > 0)) return { ok: false };
+  s.restore = { width: width, height: height, writes: 0, done: false };
+  dragRestoreStep();
+  return { ok: true };
+}
+
+function dragStarted(w) {
+  if (!dragTable || dragSession || !dragEligible(w)) return;
+  const frame = rect(w.frameGeometry);
+  const p = point(workspace.cursorPos);
+  // a keyboard move: KWin has put the pointer on the window's centre
+  if (Math.abs(p.x - (frame.x + frame.width / 2)) <= 1 && Math.abs(p.y - (frame.y + frame.height / 2)) <= 1) return;
+  const s = {
+    drag: ++nextDragId,
+    window: w,
+    frame: frame,
+    press: p,
+    hit: new DragHitTest(dragTable),
+    table: dragTable.seq,
+    maximizedAtBegin: (w.maximizeMode || 0) === 3,
+    tiledAtBegin: !!w.tile,
+    left: false,
+    allowed: null,
+    restore: null,
+    timer: null,
+  };
+  dragSession = s;
+  emit({
+    type: "drag",
+    event: {
+      type: "begin",
+      drag: s.drag,
+      window: { OwnerHandle: w.pid || -1, Handle: idOf(w) },
+      frame: frame,
+      pointer: p,
+      press: p,
+      table: s.table,
+      time: Date.now(),
+      owner: w.resourceClass ? String(w.resourceClass) : "",
+    },
+  });
+  workspace.cursorPosChanged.connect(dragPointer);
+  dragSample();
+}
+
+function dragPointer() {
+  guarded(() => {
+    const s = dragSession;
+    // the window left its first place (Escape puts it back there; a window KWin holds in place never left it)
+    if (s && !s.left && !sameRect(rect(s.window.frameGeometry), s.frame)) s.left = true;
+    dragSample();
+    dragRestoreStep();
+  });
+}
+
+function dragSample() {
+  const s = dragSession;
+  if (!s || !s.hit) return;
+  const p = point(workspace.cursorPos);
+  dragTransition(s, s.hit.sample({ x: p.x, y: p.y, t: Date.now(), flags: 0 }), p);
+}
+
+/** A transition of the hit-test goes out; a pause still running gets a timer for its end. */
+function dragTransition(s, tr, p) {
+  if (tr) {
+    if (tr.zone !== null) {
+      const reason = dragGuard(p);
+      if (reason) {
+        dragCancel(reason, p);
+        return;
+      }
+    }
+    emit({ type: "drag", event: { type: "zone", drag: s.drag, zone: tr.zone, pointer: p } });
+  }
+  const deadline = s.hit ? s.hit.nextDeadline() : null;
+  if (deadline === null) {
+    if (s.timer) s.timer.stop();
+    return;
+  }
+  if (!s.timer) {
+    s.timer = new QTimer();
+    s.timer.singleShot = true;
+    s.timer.timeout.connect(() =>
+      guarded(() => {
+        if (dragSession === s && s.hit) dragTransition(s, s.hit.tick(Date.now()), point(workspace.cursorPos));
+      })
+    );
+  }
+  s.timer.stop();
+  s.timer.start(Math.max(1, Math.ceil(deadline - Date.now())));
+}
+
+/** Why no zone may arm now: the output under the pointer shows a fullscreen window (MPOS-WIN-7). */
+function dragGuard(p) {
+  const output = workspace.screenAt ? workspace.screenAt(p) : null;
+  const full = windows().some((w) => w.fullScreen && !w.minimized && (!output || w.output === output) && onCurrentDesktop(w));
+  return full ? "fullscreen" : null;
+}
+
+/** The restored size, once the pointer is off the start of the drag (see dragRestoreSize). */
+function dragRestoreStep() {
+  const s = dragSession;
+  if (!s || !s.hit || !s.restore || s.allowed === false) return;
+  const r = s.restore;
+  const w = s.window;
+  if (r.writes > 0 && Math.round(w.frameGeometry.width) === r.width && Math.round(w.frameGeometry.height) === r.height) r.done = true;
+  // checked on the later samples, written again (at most 3 times) when KWin did not keep it
+  if (r.done || r.writes >= 3) return;
+  const p = point(workspace.cursorPos);
+  if (Math.hypot(p.x - s.press.x, p.y - s.press.y) <= DRAG_RESTORE_THRESHOLD) return;
+  if ((w.maximizeMode || 0) === 3) return; // KWin restores a maximized window itself when it moves
+  const share = s.frame.width > 0 ? Math.min(1, Math.max(0, (s.press.x - s.frame.x) / s.frame.width)) : 0.5;
+  const grabY = Math.min(Math.max(0, s.press.y - s.frame.y), Math.max(0, r.height - 1));
+  // a one-axis maximize (SMBAct's halves are vertically maximized windows) first, else KWin keeps the full height
+  if (w.maximizeMode) w.setMaximize(false, false);
+  r.writes++;
+  w.frameGeometry = { x: Math.round(p.x - share * r.width), y: Math.round(p.y - grabY), width: r.width, height: r.height };
+}
+
+/** Ends the running drag without a drop (`end` cancelled); the rest of KWin's move is ignored. */
+function dragCancel(reason, at) {
+  const s = dragSession;
+  if (!s || !s.hit) return;
+  s.hit = null;
+  if (s.timer) s.timer.stop();
+  emit({ type: "drag", event: { type: "end", drag: s.drag, zone: null, cancelled: true, reason: reason, frame: null, pointer: at || point(workspace.cursorPos) } });
+  if (reason === "window-closed" || reason === "stopped") dragStop();
+}
+
+function dragStop() {
+  const s = dragSession;
+  if (!s) return;
+  dragSession = null;
+  if (s.timer) s.timer.stop();
+  try {
+    workspace.cursorPosChanged.disconnect(dragPointer);
+  } catch (e) {
+    // not connected
+  }
+}
+
+function dragFinished(w) {
+  const s = dragSession;
+  if (!s || s.window !== w) return;
+  const hit = s.hit;
+  dragStop();
+  if (!hit) return; // cancelled earlier
+  const p = point(workspace.cursorPos);
+  const frame = rect(w.frameGeometry);
+  // Escape: KWin has put the window back where it began after it had left that place, and the pointer is elsewhere
+  const escaped = !!s.left && sameRect(frame, s.frame) && Math.hypot(p.x - s.press.x, p.y - s.press.y) > 4;
+  // KWin placed the window itself: a custom tile (Shift held), or its own edge tiling / maximize
+  const tiled = !!w.tile;
+  const maximized = (w.maximizeMode || 0) === 3 && !s.maximizedAtBegin;
+  const cancelled = escaped || tiled || maximized;
+  const zone = cancelled ? null : hit.release({ x: p.x, y: p.y, t: Date.now(), flags: 0 });
+  const event = { type: "end", drag: s.drag, zone: zone, cancelled: cancelled, frame: frame, pointer: p };
+  if (cancelled) event.reason = escaped ? "escape" : tiled ? "tiled" : "maximized";
+  emit({ type: "drag", event: event });
+}
+
+function dragDesktopChanged() {
+  const s = dragSession;
+  // KWin's "Switch desktop on edge" carries the dragged window along: the drag goes on there (MPOS-KDE-10)
+  if (s && s.hit && !onCurrentDesktop(s.window)) dragCancel("workspace-changed");
+}
+
+// ---- KWin's own screen-edge tiling (nativeTiling): held off in memory for SMBAct, never written to kwinrc
+// The script's `options` is KWin's live options object: its setters change the running value only. KWin re-reads
+// kwinrc on every reconfigure (any "Apply" in System Settings): the hold saves what it brings (the user's choice now)
+// and holds it off again. Given back when SMBAct asks, or when SMBAct's name leaves the bus (the watchdog).
+
+/** What the hold found, per option it holds ({ electricBorderTiling: true, ... }); null while nothing is held. */
+let tilingHold = null;
+
+function tilingState() {
+  const saved = {};
+  if (tilingHold) for (const k in tilingHold) saved[k] = tilingHold[k];
+  return {
+    electricBorderTiling: !!options.electricBorderTiling,
+    electricBorderMaximize: !!options.electricBorderMaximize,
+    held: !!tilingHold,
+    saved: saved,
+  };
+}
+
+function nativeTiling(req) {
+  if (req.suppress !== undefined && typeof req.suppress !== "boolean") throw badRequest('"suppress" must be true or false, or absent to read');
+  let which = TILING_OPTIONS;
+  if (req.options !== undefined) {
+    if (!Array.isArray(req.options) || !req.options.every((o) => TILING_OPTIONS.indexOf(o) >= 0)) {
+      throw badRequest('"options" must list ' + TILING_OPTIONS.join(" and/or "));
+    }
+    which = req.options;
+  }
+  if (req.suppress === true) {
+    tilingHold = tilingHold || {};
+    for (const k of which) {
+      if (!(k in tilingHold)) tilingHold[k] = !!options[k];
+      if (options[k]) options[k] = false;
+    }
+  } else if (req.suppress === false) {
+    tilingRelease(req.options === undefined ? null : which);
+  }
+  watchdogUpdate();
+  return tilingState();
+}
+
+/** Puts back what the hold found (`which`: those options only; null: all of them). */
+function tilingRelease(which) {
+  if (!tilingHold) return;
+  for (const k of TILING_OPTIONS) {
+    if (!(k in tilingHold) || (which && which.indexOf(k) < 0)) continue;
+    if (!!options[k] !== tilingHold[k]) options[k] = tilingHold[k];
+    delete tilingHold[k];
+  }
+  if (Object.keys(tilingHold).length === 0) tilingHold = null;
+}
+
+options.configChanged.connect(() =>
+  guarded(() => {
+    if (!tilingHold) return;
+    // KWin re-read kwinrc: what it brings is the user's choice now, held off again
+    for (const k in tilingHold) {
+      tilingHold[k] = !!options[k];
+      if (options[k]) options[k] = false;
+    }
+  })
+);
+
+// ---- the watchdog: a failed call to SMBAct reaches no callback, so while the script holds something for SMBAct (the
+// tiling hold, the drag watch) it asks the bus every WATCHDOG_MS whether SMBAct is still there; gone: all given back
+
+let watchdog = null;
+
+function watchdogUpdate() {
+  const needed = !!tilingHold || !!dragTable;
+  if (needed && !watchdog) {
+    watchdog = new QTimer();
+    watchdog.interval = WATCHDOG_MS;
+    watchdog.timeout.connect(() =>
+      callDBus("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "NameHasOwner", SERVICE, (has) => {
+        if (has === false) guarded(clientGone);
+      })
+    );
+    watchdog.start();
+  } else if (!needed && watchdog) {
+    watchdog.stop();
+    watchdog = null;
+  }
+}
+
+/** SMBAct left the bus (killed, crashed): its hold and its drag watch end here, as GNOME's extension does. */
+function clientGone() {
+  tilingRelease(null);
+  dragCancel("stopped");
+  dragTable = null;
+  watchdogUpdate();
+}
+
 const OPS = {
   hello: () => hello(),
   listWindows: () => listWindows(),
@@ -238,6 +716,10 @@ const OPS = {
   showDesktop: (req) => showDesktop(req),
   displays: () => displays(),
   pointer: () => ({ x: Math.round(workspace.cursorPos.x), y: Math.round(workspace.cursorPos.y) }),
+  dragWatch: (req) => dragWatch(req),
+  dragAnswer: (req) => dragAnswer(req),
+  dragRestoreSize: (req) => dragRestoreSize(req),
+  nativeTiling: (req) => nativeTiling(req),
 };
 
 function hello() {
@@ -284,13 +766,31 @@ function watch(w) {
   w.maximizedChanged.connect(() => windowsChanged(true));
   w.fullScreenChanged.connect(() => windowsChanged(true));
   w.interactiveMoveResizeFinished.connect(() => windowsChanged(true));
+  w.interactiveMoveResizeStarted.connect(() => guarded(() => dragStarted(w)));
+  w.interactiveMoveResizeFinished.connect(() => guarded(() => dragFinished(w)));
+}
+
+/** Signal handlers never throw into KWin. */
+function guarded(fn) {
+  try {
+    fn();
+  } catch (e) {
+    console.warn("smbact-kwin: " + e);
+  }
 }
 
 workspace.windowAdded.connect((w) => {
   watch(w);
   windowsChanged(true);
 });
-workspace.windowRemoved.connect(() => windowsChanged(true));
+workspace.windowRemoved.connect((w) => {
+  windowsChanged(true);
+  guarded(() => {
+    if (dragSession && dragSession.window === w) dragCancel("window-closed");
+  });
+});
+workspace.screensChanged.connect(() => guarded(() => dragCancel("displays-changed")));
+workspace.currentDesktopChanged.connect(() => guarded(() => dragDesktopChanged()));
 workspace.windowActivated.connect((w) => emit({ type: "focusChanged", id: w ? idOf(w) : null }));
 for (const w of workspace.windowList()) watch(w);
 
