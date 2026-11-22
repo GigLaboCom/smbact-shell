@@ -121,13 +121,14 @@ XWayland. Rectangles are `{ "x", "y", "width", "height" }`.
 | `ungrabAccelerator` | `accelerator` (as grabbed) | `{ released }` |
 | `snapshots` | `ids`, `maxSize?` (px, default 480, at most 1024), `background?` (`#rrggbb`, default white) | `{ snapshots: Snapshot[] }` (the cached ones) |
 | `snapshot` | `id` | `{ snapshot }` |
-| `dragWatch` | `table` (a zone table, or `null` to stop) | `{ watching, reason?, draws, restoreDuringMove }` |
+| `dragWatch` | `table` (a zone table, or `null` to stop) | `{ watching, reason?, draws, restoreDuringMove, modifier? }` |
 | `dragAnswer` | `drag`, `allow` | `{ ok }` (`false`: no such drag running) |
 | `dragRestoreSize` | `drag`, `width`, `height` | `{ ok }` (`false`: no such drag, or the window is maximized) |
-| `nativeTiling` | `suppress?` (`true` hold off, `false` give back, absent: read) | `{ edgeTiling, user, held, saved?, tilingExtension }` |
+| `nativeTiling` (GNOME) | `suppress?` (`true` hold off, `false` give back, absent: read) | `{ edgeTiling, user, held, saved?, tilingExtension }` |
+| `nativeTiling` (KWin) | `suppress?` (as above), `options?` (`["electricBorderTiling", "electricBorderMaximize"]`, default both) | `{ electricBorderTiling, electricBorderMaximize, held, saved }` |
 
-The last four are the GNOME Shell extension's only (plugin 2.2.0 and later); see "Window drags" and "Mutter's edge
-tiling" below.
+The last four come with plugin 2.2.0, in the GNOME Shell extension and the KWin script; see "Window drags", "Mutter's
+edge tiling" and "KWin's screen-edge tiling" below.
 
 - `setState` states: `minimized`, `maximized`, `maximizedHorizontally`, `maximizedVertically`, `fullscreen`,
   `above`.
@@ -163,12 +164,13 @@ tiling" below.
 - `showDesktop` with `show: true` minimizes the visible windows of the active workspace and remembers them; `false`
   restores those.
 
-## Window drags (GNOME, plugin 2.2.0)
+## Window drags (plugin 2.2.0)
 
-SMBAct places a window the user drags to a screen edge or corner (its "positioning with the mouse"). The extension is
-its drag source on GNOME: it reports when a window is dragged and which zone of SMBAct's table the pointer is in, and
-nothing else. It draws nothing (SMBAct draws its zone map and the footprint itself, `draws: false`) and moves no window
-at the end of a drag (SMBAct's own action does, through `moveResize` / `setState`).
+SMBAct places a window the user drags to a screen edge or corner (its "positioning with the mouse"). The plugin is
+its drag source on GNOME and on KDE Plasma: it reports when a window is dragged and which zone of SMBAct's table the
+pointer is in, and nothing else. It draws nothing (SMBAct draws its zone map and the footprint itself, `draws: false`)
+and moves no window at the end of a drag (SMBAct's own action does, through `moveResize` / `setState`). The rules
+below are the GNOME Shell extension's; the KWin script's differences follow them ("The KWin script's drags").
 
 `dragWatch` gives the table; drags are reported only while one is set:
 
@@ -216,6 +218,32 @@ Events: `{ "type": "drag", "event": <event> }`, where `<event>` is one of
 it grabbed it; once per drag. A window maximized both ways is Mutter's to restore (`{ ok: false }`); a one-axis
 maximize (how SMBAct holds a full-height half) is left first.
 
+### The KWin script's drags
+
+The same operations, events and table; what KWin gives a script makes these differences:
+
+- A drag is a window's `interactiveMoveResizeStarted` with `move` set (the same signal starts resizes) of a normal,
+  movable, resizable window that is not fullscreen; it ends with `interactiveMoveResizeFinished`. A move started from
+  the keyboard (the window menu's Move, a shortcut) is not reported: KWin puts the pointer on the window's centre for
+  it, which a title-bar drag past KWin's threshold never is.
+- The pointer comes from `workspace.cursorPos` on every `workspace.cursorPosChanged` (connected during a drag only); a
+  pause of a shared edge ends on a timer, without pointer motion. `begin`'s `press` is the pointer when KWin started the
+  move (a few pixels past the real press), `time` is `Date.now()`.
+- **No modifiers.** KWin tells a script nothing about keys or buttons: every sample carries flags 0, so the table must
+  hold only `plain` zones, and `dragWatch` answers `modifier: false`. Shift during a drag is KWin's own: it drops the
+  window into KWin's custom tile under the pointer, whatever its options say.
+- `end` comes after KWin applied its own result. Escape: KWin has put the window back where it began after it had left
+  that place, and the pointer is elsewhere (`cancelled`, reason `escape`). A KWin tile (Shift's custom tile, or KWin's
+  own edge tiling when it is not held off) or a KWin maximize at the end ends the drag with `zone: null`, cancelled,
+  reason `tiled` or `maximized`. A window closed (`window-closed`), the outputs changed (`displays-changed`), the
+  desktop changed without the window (`workspace-changed`; KWin's "Switch desktop on edge" carries the dragged window
+  along, and the drag goes on there), a zone over an output showing a fullscreen window (`fullscreen`) and the watch
+  stopped (`stopped`) end it as on GNOME. There is no overview reason.
+- `dragRestoreSize` writes `frameGeometry` during KWin's move once the pointer is 12 px off the start: KWin keeps the
+  size for the rest of the move and keeps the pointer at the same share of the window where it grabbed it. A one-axis
+  maximize is left first; a window maximized both ways or in a KWin tile at the start is KWin's to restore
+  (`{ ok: false }`). Written again (at most 3 times) when KWin did not keep it.
+
 ## Mutter's edge tiling (GNOME, plugin 2.2.0)
 
 `nativeTiling` holds `org.gnome.mutter edge-tiling` off for the client and gives it back:
@@ -235,6 +263,27 @@ maximize (how SMBAct holds a full-height half) is left first.
 
 The drag watch belongs to the client too: it stops when the client goes away or changes, and when the extension is
 disabled.
+
+## KWin's screen-edge tiling (KWin script, plugin 2.2.0)
+
+`nativeTiling` holds KWin's own drag tiling off for the client and gives it back: System Settings › Screen Edges,
+"Tile: Windows dragged to left or right edge" (`kwinrc [Windows] ElectricBorderTiling`) and "Maximize: Windows dragged
+to top edge" (`ElectricBorderMaximize`), both on by default.
+
+- The script sets KWin's live `options.electricBorderTiling` / `electricBorderMaximize` (`options`: which, default
+  both). That is KWin's memory only: kwinrc is not written, so System Settings keeps showing both boxes ticked, and
+  KWin's next start or `reconfigure` reads kwinrc again.
+- `suppress: true` saves the value KWin has now and sets `false`; repeated calls keep the first saved value. KWin
+  re-reads kwinrc on every reconfigure (any "Apply" in System Settings, `options.configChanged`): the hold saves what
+  KWin brings (the user's choice now) and sets `false` again.
+- `suppress: false` puts the saved values back (only `options` when given).
+- The hold belongs to the client: a script's call that fails reaches no callback, so while it holds something (the
+  tiling hold or the drag watch) the script asks the bus every 2 s whether `com.giglabo.SMBAct` has an owner
+  (`NameHasOwner`); when it has none, the saved values go back and the drag watch stops. The script itself is loaded
+  by the client and unloaded by it; unloading leaves KWin's options as they are, so the client gives the hold back
+  first (or lets KWin re-read kwinrc).
+- The reply: `electricBorderTiling` and `electricBorderMaximize` as KWin has them now, `held`, `saved` (per held option,
+  the value it found).
 
 ## Events
 
@@ -257,7 +306,8 @@ disabled.
 - API 1, plugin 2.1.0 (2026-11): `connector` in `displays`, `onActiveWorkspace` and (KWin) `tiled` in the window
   (new optional fields, same API), with SMBAct 2.1.0.
 - API 1, plugin 2.2.0 (not released yet): `dragWatch`, `dragAnswer`, `dragRestoreSize`, `nativeTiling`, the `drag`
-  event (GNOME only; new operations, same API; clients look for them in `hello`'s `ops`).
+  event, in the GNOME Shell extension and the KWin script (new operations, same API; clients look for them in
+  `hello`'s `ops`).
 
 ## KWin transport
 
@@ -282,7 +332,8 @@ SMBAct's own X11 hotkeys fire with any focus: KWin passes key combinations to XW
 icon is a QIcon: the script reports `desktopFile` and SMBAct looks the icon up), and the X11 marks (`client`,
 `x11Window` are `null`: KWin's scripting API does not tell X11 from Wayland windows; SMBAct matches them against the X
 server's own list). Window ids are the first 32 bits of KWin's UUID for the window (stable across reloads). The
-window drags and `nativeTiling` (plugin 2.2.0) are the GNOME Shell extension's only so far.
+window drags and `nativeTiling` (plugin 2.2.0) have KWin's differences ("The KWin script's drags", "KWin's
+screen-edge tiling"); the drag events go out as `Event` calls like the others.
 
 - API 1, plugin 1.0.0-alpha.3 (2026-11): the KWin script (`kwin/smbact-kwin.js`).
 
