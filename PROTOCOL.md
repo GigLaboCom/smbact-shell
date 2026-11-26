@@ -305,9 +305,9 @@ to top edge" (`ElectricBorderMaximize`), both on by default.
 - API 1, plugin 2.0.0 (2026-11): the first full release, with SMBAct 2.0.0; the same API as 1.0.0-alpha.3.
 - API 1, plugin 2.1.0 (2026-11): `connector` in `displays`, `onActiveWorkspace` and (KWin) `tiled` in the window
   (new optional fields, same API), with SMBAct 2.1.0.
-- API 1, plugin 2.2.0 (not released yet): `dragWatch`, `dragAnswer`, `dragRestoreSize`, `nativeTiling`, the `drag`
-  event, in the GNOME Shell extension and the KWin script (new operations, same API; clients look for them in
-  `hello`'s `ops`).
+- API 1, plugin 2.2.0 (2026-11): `dragWatch`, `dragAnswer`, `dragRestoreSize`, `nativeTiling`, the `drag` event, in
+  the GNOME Shell extension and the KWin script (new operations, same API; clients look for them in `hello`'s `ops`),
+  with SMBAct 2.2.0.
 
 ## KWin transport
 
